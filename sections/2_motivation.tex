@@ -1,0 +1,411 @@
+\section{The dbt Optimization Setting}
+\label{sec:motivating}
+
+Before presenting our approach, we describe the optimization setting that \tool targets and illustrate, through three examples drawn from or inspired by real-world analytics pipelines, the kinds of cross-model optimizations that this setting enables but that fall outside the reach of existing techniques.
+
+\subsection{What is a dbt Project?}
+\label{sec:dbt-setting}
+
+A dbt project is a directed acyclic graph (DAG) of SQL transformations, called \emph{models}.
+Each model is a SQL transformation that produces a single output relation;
+in this paper we focus on the standard \texttt{view} and \texttt{table} materialization modes.
+Models reference one another through an explicit \texttt{ref()} construct that defines
+the dependency edges of the DAG.
+Each model is configured to be either \emph{materialized} as a physical table or
+expanded inline as a \emph{view}.
+The project is executed periodically against a target data warehouse:
+when a model is run, dbt resolves its \texttt{ref()} calls, substitutes the appropriate
+table reference or subquery, and submits the resulting SQL to the warehouse.
+
+This setting differs from the workloads targeted by traditional query optimization in three ways that matter for our problem.
+
+\head{Full DAG visibility}
+The optimizer has access to the complete SQL definition of every model in the project, the dependency structure that connects them, and the materialization configuration of each model.
+This is a stronger form of visibility than what is available to a database query optimizer, which rewrites one query at a time, or to multi-query optimization (MQO)~\cite{sellis1988multiple}, which sees a set of independent queries.
+In both cases, the optimizer reasons over a flat collection of queries; in the dbt setting, it reasons over a dependency graph of transformations whose structure is itself under its control.
+This shift in scope, from query rewriting to graph-level restructuring, is what makes optimizations such as merging, splitting, or inventing new intermediate models meaningful.
+
+\head{Project stability}
+A dbt project is a maintained software artifact, not an ad-hoc query workload.
+It changes only when developers modify the underlying business logic or data model, not on every execution.
+Between such changes, the same DAG is executed on a recurring schedule, often many times per day.
+This stability justifies investing optimization effort that would not pay off in an online query processing setting: the cost of analysis (including potentially expensive cross-model reasoning) is amortized over many scheduled executions of the same DAG.
+
+\head{Heterogeneous refresh patterns}
+Different sources update at different rates, and different downstream consumers (dashboards, reports, downstream pipelines) require fresh results at different rates.
+The refresh frequency of a model is therefore not a property of the model in isolation but is shaped by both its upstream sources and its downstream consumers.
+Two consequences follow.
+First, a model can sometimes be skipped entirely when its upstream inputs have not changed since the last run, so the effective cost of a model depends on how often it must actually be recomputed, not on how often the schedule fires.
+Second, structural decisions about the DAG are not independent of refresh scheduling: splitting a model along a frequency boundary can move expensive computation onto a slower cadence, while merging two models can force the combined result to refresh at the rate of the faster input.
+Optimizing the DAG therefore requires reasoning about structure and refresh rates jointly.
+ 
+These three properties (visibility, stability, and frequency heterogeneity) together define a distinct optimization setting.
+The optimizer is reasoning not about a query but about a \emph{program}: a stable DAG of SQL transformations whose structure, materialization, and refresh schedule are jointly under its control.
+A real dbt project may contain hundreds of models, and the space of possible refactorings, materialization choices, and frequency-aware splits is far too large for developers to explore systematically by hand; this motivates the need for an automated optimizer rather than a guidebook of best practices.
+
+\subsection{Motivating Examples}
+\label{sec:motivating-examples}
+
+We illustrate three classes of optimization that \tool discovers.
+Each requires the optimizer to read and reason about SQL definitions \emph{across} model boundaries within the DAG, a capability that the dbt setting uniquely affords.
+The SQL in each example is simplified for presentation; domain-specific details are abstracted away.
+
+%==============================================================
+% EXAMPLE 1: Semantic Factorization
+%==============================================================
+\head{Example 1: Cross-Model Semantic Factorization}
+A pipeline contains seven classifier models that each tag orders with a service category (\texttt{dialysis}, \texttt{psychiatric}, and five others).
+The input is a \texttt{claims} table in which each row represents one item of an order, so a single order has many rows.
+Each classifier scans \texttt{claims}, keeps rows whose codes match its category's code list, and returns the distinct \texttt{order\_id}s of those rows.
+The seven classifiers have \emph{different} SQL: different predicates, different code vocabularies, and in some cases different join structures.
+Two representative classifiers are shown on the left of Figure~\ref{fig:ex-factorization}.
+
+
+\begin{figure}[!htbp]
+\begin{minipage}[t]{0.48\linewidth}
+\figsubheader{Before: 7 classifiers (2 shown)}
+\begin{lstlisting}[language=SQL]
+-- dialysis_classifier
+SELECT DISTINCT order_id
+FROM {{ ref('claims') }}
+WHERE bill_code LIKE '72%'
+   OR taxonomy IN (set_dia_tax)
+   OR diagnosis IN (set_dia_dx)
+
+
+-- psychiatric_classifier
+SELECT DISTINCT order_id
+FROM {{ ref('claims') }}
+WHERE revenue IN (set_psy_rev)
+   OR diagnosis BETWEEN
+        '290' AND '319'
+\end{lstlisting}
+\vspace{1.6\baselineskip}
+\end{minipage}
+\hfill
+\begin{minipage}[t]{0.48\linewidth}
+\figsubheader{After: precomputation+lookups}
+\begin{lstlisting}[language=SQL]
+-- order_flags (new)
+SELECT order_id,
+  MAX(CASE WHEN bill_code LIKE '72%'
+    OR taxonomy IN (set_dia_tax)
+    OR diagnosis IN (set_dia_dx)
+    THEN 1 ELSE 0 END) AS f_dia,
+  MAX(CASE WHEN ... 
+    THEN 1 ELSE 0 END) AS f_psy,
+  ...   -- 7 categories
+FROM {{ ref('claims') }}
+GROUP BY order_id
+ 
+-- dialysis_classifier (rewritten)
+SELECT order_id
+FROM {{ ref('order_flags') }}
+WHERE f_dia = 1
+\end{lstlisting}
+\end{minipage}
+\caption{Cross-model semantic factorization. Seven classifiers with no syntactic overlap perform the same semantic operation on a shared parent. \tool synthesizes a new shared model that pre-aggregates all classifier flags in one pass.}
+\label{fig:ex-factorization}
+\end{figure}
+
+
+
+
+The seven classifiers share no common subexpression, yet they all perform the same \emph{semantic operation}: for each order, decide whether any of its rows match a category-specific predicate.
+\tool recognizes this cross-model pattern and factors it.
+It synthesizes a new intermediate model \texttt{order\_flags} that, in a single pass over \texttt{claims}, computes one boolean flag per category by aggregating each category's predicate with \texttt{MAX(CASE WHEN ... THEN 1 ELSE 0 END)} grouped by \texttt{order\_id}.
+Each original classifier is then rewritten as a lightweight lookup: select the orders whose corresponding flag in \texttt{order\_flags} is~$1$.
+Seven full scans and seven independent grouping passes over \texttt{claims} are replaced with one pre-aggregation pass and seven inexpensive boolean filters.
+ 
+This optimization requires three capabilities that go beyond traditional techniques.
+First, the optimizer must recognize that seven syntactically dissimilar models perform the same semantic operation, which syntactic subexpression matching, the basis of multi-query optimization (MQO)~\cite{sellis1988multiple} and common subexpression elimination, cannot do.
+Second, it must \emph{invent} a new intermediate model absent from the original project; materialized view recommendation tools~\cite{agrawal2000automated, bigsubs} synthesize candidate views, but they too rely on syntactic subexpression mining, of which the seven classifiers share none.
+Third, it must rewrite the dependent models to consume the new intermediate while preserving end-to-end equivalence, a multi-model restructuring that single-query rewrite systems~\cite{wang2024wetune,zhou2024r} do not attempt.
+
+%==============================================================
+% EXAMPLE 2: Cross-Boundary Reasoning
+%==============================================================
+\head{Example 2: Cross-Boundary Semantic Reasoning}
+The same project contains a classifier \texttt{nursing} that filters for skilled-nursing claims by facility code, then performs an anti-join against a sibling model \texttt{equipment} to exclude equipment-related claims (Figure~\ref{fig:ex-crossboundary}, left).
+The anti-join forces the engine to materialize \texttt{equipment}, build a hash table, and probe it for every row of \texttt{claims}; it also introduces a DAG dependency that serializes the two models.
+
+
+
+\begin{figure}[!htbp]
+\begin{minipage}[t]{0.48\linewidth}
+\figsubheader{Before: anti-join}
+\begin{lstlisting}[language=SQL]
+-- nursing
+SELECT *
+FROM {{ ref('claims') }} c
+WHERE c.facility_code
+        IN ('31','32')
+  AND NOT EXISTS (
+    SELECT 1
+    FROM {{ ref('equipment') }} e
+    WHERE e.order_id = c.order_id
+      AND e.line_id  = c.line_id)
+ 
+-- equipment (just a filter)
+SELECT *
+FROM {{ ref('claims') }}
+WHERE category = 'equipment'
+\end{lstlisting}
+\end{minipage}
+\hfill
+\begin{minipage}[t]{0.48\linewidth}
+\figsubheader{After: predicate}
+\begin{lstlisting}[language=SQL]
+-- nursing (rewritten)
+SELECT *
+FROM {{ ref('claims') }} c
+WHERE c.facility_code
+        IN ('31','32')
+  AND (c.category IS NULL
+    OR c.category <> 'equipment')
+
+
+ 
+-- equipment is removed if no
+-- other model depends on it;
+-- otherwise its definition
+-- is unchanged.
+\end{lstlisting}
+\vspace{1.6\baselineskip}
+\end{minipage}
+\caption{Cross-boundary semantic reasoning. By reading the SQL of the sibling \texttt{equipment} model, \tool determines that the anti-join is equivalent to a scalar predicate on a shared parent. The hash anti-join, the auxiliary scan, and the DAG dependency are all eliminated.}
+\label{fig:ex-crossboundary}
+\end{figure}
+
+
+
+
+By reading the SQL definition of \texttt{equipment}, \tool discovers that it computes nothing more than a single-predicate filter on a shared parent.
+The anti-join is therefore equivalent to an inline scalar predicate on \texttt{claims}, as shown on the right of the figure: the hash anti-join, the auxiliary scan, and the cross-model DAG dependency are all eliminated.
+The same reasoning generalizes to every sibling classifier that uses \texttt{equipment} as an exclusion list, compounding the benefit across the pipeline.
+
+The equivalence enabling this rewrite is not declared anywhere; it is \emph{embedded in the SQL of another model file}.
+A traditional engine sees \texttt{equipment} either as a base table to be probed or as a view to be expanded into the local query, neither of which performs the cross-model analysis needed to eliminate the join entirely.
+We acknowledge a tradeoff: the rewrite couples \texttt{nursing} to the current definition of \texttt{equipment}, so a future change to that definition would require updating the rewritten consumers.
+In practice, stable upstream models such as \texttt{equipment} change rarely, and \tool re-evaluates the project after each developer change, so the cost of re-deriving the rewrite is amortized over many executions.
+
+%==============================================================
+% EXAMPLE 3: Frequency-Aware
+%==============================================================
+\head{Example 3: Frequency-Aware Restructuring}
+Different sources in a dbt project update at different rates, and the structure of the DAG determines how much computation must be repeated at each high-frequency refresh.
+Consider a model that joins fast-changing transactional data with slow-changing reference data and applies expensive classification logic to the slow-changing side (Figure~\ref{fig:ex-frequency}, left).
+
+
+\begin{figure}[!htbp]
+\begin{minipage}[t]{0.48\linewidth}
+\figsubheader{Before: hourly classification}
+\begin{lstlisting}[language=SQL]
+-- order_summary  (hourly)
+SELECT o.order_id, o.amount,
+  CASE
+    WHEN p.code IN (set_A) THEN 'A'
+    WHEN p.code IN (set_B) THEN 'B'
+    ...
+  END AS category
+FROM {{ ref('orders') }}  o
+JOIN {{ ref('catalog') }} p
+  ON o.product_id = p.product_id
+
+  
+-- orders:  hourly
+-- catalog: weekly
+\end{lstlisting}
+\vspace{1.6\baselineskip}
+\end{minipage}
+\hfill
+\begin{minipage}[t]{0.48\linewidth}
+\figsubheader{After: split by frequency}
+\begin{lstlisting}[language=SQL]
+-- product_categories (weekly)
+SELECT product_id,
+  CASE
+    WHEN code IN (set_A) THEN 'A'
+    WHEN code IN (set_B) THEN 'B'
+    ...
+  END AS category
+FROM {{ ref('catalog') }}
+ 
+-- order_summary (hourly)
+SELECT o.order_id, o.amount,
+       pc.category
+FROM {{ ref('orders') }} o
+JOIN {{ ref('product_categories') }} pc
+  USING (product_id)
+\end{lstlisting}
+\end{minipage}
+\caption{Frequency-aware restructuring. Splitting the model along the frequency boundary moves expensive classification onto a weekly cadence; the hourly model becomes a lightweight join.}
+\label{fig:ex-frequency}
+\end{figure}
+
+
+Because \texttt{orders} changes hourly, \texttt{order\_summary} re-executes hourly, and the multi-branch classification over \texttt{catalog} is recomputed on every hourly refresh, despite its inputs changing only weekly.
+\tool traces the update frequency from each source through the DAG, identifies that this model has \emph{mixed-frequency inputs}, and splits it along the frequency boundary.
+The expensive classification is extracted into a new slow-frequency model, and the original model becomes a lightweight equi-join.
+When this pattern recurs across many consumers of the same slow-changing reference data, the savings compound: each hourly refresh avoids redundant recomputation of logic whose inputs have not changed.
+
+This optimization is invisible to optimizers that treat cost as a fixed per-query quantity: the benefit of splitting the model is realized only when the two halves are known to execute at different rates.
+Materialized view selection considers update cost but does not restructure the DAG to align computation with update frequency, and traditional query rewriters have no notion of refresh schedule at all.
+
+\subsection{Why Existing Techniques Fall Short}
+\label{sec:why-different}
+
+The three examples above are not isolated curiosities; they illustrate a general capability gap.
+Single-query rewrite systems~\cite{wang2024wetune,zhou2024r,chakravarthy1990logic} operate within the boundary of one query and cannot restructure across model files.
+Multi-query optimization and common subexpression elimination~\cite{sellis1988multiple} share intermediate computations across queries but rely on syntactic matching, so they miss the cross-model semantic equivalence in Example~1.
+Materialized view selection~\cite{agrawal2000automated} chooses among existing view candidates and treats update cost as a static parameter rather than as a structural driver of DAG design (Example~3).
+Code clone detection and lineage tools can identify structural similarity or trace data provenance, but they do not perform the optimization itself.
+
+The gap is not that any one of these techniques is poorly designed; it is that none of them targets the setting we are concerned with.
+Optimizing a dbt project requires (1) cross-model semantic analysis, (2) DAG-aware structural rewriting that may invent or merge models, and (3) frequency-aware reasoning that ties structural decisions to update rates.
+The remainder of this paper presents an approach that integrates these three capabilities into a coherent optimization framework.
+
+
+
+
+
+
+\begin{comment}
+    
+
+
+\begin{figure}[t]
+\figsubheader{Before: 7 independent classifiers (2 shown)}
+% \centering\textbf{Before: 7 independent classifiers (2 shown)}
+\begin{lstlisting}[language=SQL]
+-- dialysis_classifier
+SELECT DISTINCT order_id
+FROM {{ ref('claims') }}
+WHERE bill_code LIKE '72%'
+   OR taxonomy IN (set_dialysis_tax)
+   OR diagnosis IN (set_dialysis_dx)
+
+-- psychiatric_classifier
+SELECT DISTINCT order_id
+FROM {{ ref('claims') }}
+WHERE revenue IN (set_psych_rev)
+   OR diagnosis BETWEEN '290' AND '319'
+\end{lstlisting}
+
+\figsubheader{After: shared pre-aggregation + lookups}
+% \centering\textbf{After: shared pre-aggregation + lookups}
+\begin{lstlisting}[language=SQL]
+-- order_flags  (new shared model)
+SELECT order_id,
+  MAX(CASE WHEN bill_code LIKE '72%'
+        OR taxonomy IN (set_dialysis_tax)
+        OR diagnosis IN (set_dialysis_dx)
+       THEN 1 ELSE 0 END) AS f_dialysis,
+  MAX(CASE WHEN ... THEN 1 ELSE 0 END) AS f_psych,
+  ...  -- flags for all 7 categories
+FROM {{ ref('claims') }}
+GROUP BY order_id
+
+-- dialysis_classifier (rewritten)
+SELECT order_id FROM {{ ref('order_flags') }}
+WHERE f_dialysis = 1
+\end{lstlisting}
+\caption{Cross-model semantic factorization. Seven classifiers with no syntactic overlap perform the same semantic operation on a shared parent. \tool synthesizes a new shared model that pre-aggregates all classifier flags in one pass.}
+\label{fig:ex-factorization}
+\end{figure}
+
+=========================
+
+
+
+
+\begin{figure}[t]
+\figsubheader{Before: anti-join against sibling model}
+% \centering\textbf{Before: anti-join against sibling model}
+\begin{lstlisting}[language=SQL]
+-- nursing
+SELECT *
+FROM {{ ref('claims') }} c
+WHERE c.facility_code IN ('31','32')
+  AND NOT EXISTS (
+    SELECT 1
+    FROM {{ ref('equipment') }} e
+    WHERE e.order_id = c.order_id
+      AND e.line_id  = c.line_id)
+
+-- equipment  (definition is just a filter)
+SELECT * FROM {{ ref('claims') }}
+WHERE category = 'equipment'
+\end{lstlisting}
+
+\figsubheader{After: anti-join replaced with predicate}
+% \centering\textbf{After: anti-join replaced with predicate}
+\begin{lstlisting}[language=SQL]
+-- nursing  (rewritten)
+SELECT *
+FROM {{ ref('claims') }} c
+WHERE c.facility_code IN ('31','32')
+  AND (c.category IS NULL
+    OR c.category <> 'equipment')
+
+-- equipment is removed if no other model
+-- depends on it; otherwise its definition
+-- is unchanged.
+\end{lstlisting}
+\caption{Cross-boundary semantic reasoning. By reading the SQL of the sibling \texttt{equipment} model, \tool determines that the anti-join is equivalent to a scalar predicate on a shared parent. The hash anti-join, the auxiliary scan, and the DAG dependency are all eliminated.}
+\label{fig:ex-crossboundary}
+\end{figure}
+
+
+
+=========================
+
+
+
+\begin{figure}[t]
+\figsubheader{Before: classification re-runs hourly}
+% \centering\textbf{Before: classification re-runs hourly}
+\begin{lstlisting}[language=SQL]
+-- order_summary  (runs hourly)
+SELECT o.order_id, o.amount,
+  CASE
+    WHEN p.code IN (set_A) THEN 'A'
+    WHEN p.code IN (set_B) THEN 'B'
+    ...
+  END AS category
+FROM {{ ref('orders') }}  o   -- hourly
+JOIN {{ ref('catalog') }} p   -- weekly
+  ON o.product_id = p.product_id
+\end{lstlisting}
+
+\figsubheader{After: split along frequency boundary}
+% \centering\textbf{After: split along frequency boundary}
+\begin{lstlisting}[language=SQL]
+-- product_categories  (new, runs weekly)
+SELECT product_id,
+  CASE
+    WHEN code IN (set_A) THEN 'A'
+    WHEN code IN (set_B) THEN 'B'
+    ...
+  END AS category
+FROM {{ ref('catalog') }}
+
+-- order_summary  (rewritten, hourly, lightweight)
+SELECT o.order_id, o.amount, pc.category
+FROM {{ ref('orders') }} o
+JOIN {{ ref('product_categories') }} pc
+  USING (product_id)
+\end{lstlisting}
+\caption{Frequency-aware restructuring. Splitting the model along the frequency boundary moves expensive classification onto a weekly cadence; the hourly model becomes a lightweight join.}
+\label{fig:ex-frequency}
+\end{figure}
+
+
+
+
+
+
+
+
+
+\end{comment}

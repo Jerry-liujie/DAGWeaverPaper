@@ -1,0 +1,324 @@
+\section{Approach}
+\label{sec:approach}
+
+
+
+
+
+
+% Required preamble (in main.tex):
+%   \usepackage{tikz}
+% This file loads its own TikZ libraries below, so no \usetikzlibrary
+% is needed in main.tex on its account.
+
+\usetikzlibrary{arrows.meta, positioning, shapes.geometric, fit, calc}
+
+\begin{figure*}[t]
+\centering
+\resizebox{\textwidth}{!}{%
+\begin{tikzpicture}[
+    font=\small,
+    node distance=4mm and 6mm,
+    stage/.style={
+        draw, rounded corners=2pt, thick,
+        minimum height=10mm, minimum width=30mm,
+        align=center, fill=black!4,
+        inner sep=2pt
+    },
+    freqstage/.style={
+        draw, rounded corners=2pt, thick, dashed,
+        minimum height=4mm, minimum width=28mm,
+        align=center, fill=blue!5,
+        inner sep=2pt
+    },
+    io/.style={
+        align=center, font=\footnotesize\itshape, text=black!70
+    },
+    arrow/.style={
+        -{Stealth[length=2.5mm]}, thick
+    },
+    freqarrow/.style={
+        -{Stealth[length=2.5mm]}, thick, dashed, draw=blue!60!black
+    },
+    arrowlabel/.style={
+        font=\scriptsize, midway, fill=white, inner sep=1pt
+    }
+]
+
+% --- input ---
+\node[io] (input) {dbt project $P$};
+
+% --- four pipeline stages, left to right ---
+\node[stage, right=of input] (s1) {Candidate\\Identification\\\scriptsize(\S\ref{sec:candidate-identification})};
+\node[stage, right=of s1]    (s2) {LLM\\Refactoring\\\scriptsize(\S\ref{sec:llm-refactoring})};
+\node[stage, right=of s2]    (s3) {Materialization\\Tuning\\\scriptsize(\S\ref{sec:materialization})};
+\node[stage, right=of s3]    (s4) {Global\\Selection\\\scriptsize(\S\ref{sec:selection})};
+
+% --- output ---
+\node[io, right=of s4] (output) {optimized\\project $P^\star$};
+
+% --- main pipeline arrows with artifact labels ---
+\draw[arrow] (input) -- (s1);
+\draw[arrow] (s1) -- node[arrowlabel, above]{group} node[arrowlabel, below]{subgraphs} (s2);
+\draw[arrow] (s2) -- node[arrowlabel, above]{verified} node[arrowlabel, below]{candidates} (s3);
+\draw[arrow] (s3) -- node[arrowlabel, above]{per-cand.} node[arrowlabel, below]{deltas $\Delta_c$} (s4);
+\draw[arrow] (s4) -- (output);
+
+% --- frequency profile band: one wide box spanning under stages s1-s4 ---
+\node[freqstage, below=2mm of s2.south,
+      minimum width=125mm, minimum height=10mm,
+      anchor=north] (fband)
+  at ($(s1.south west)!0.5!(s4.south east) + (0,-8mm)$)
+  {Frequency profile\\\scriptsize(declared schedule + source update rates,
+   propagated through DAG; \S\ref{sec:frequency})};
+
+% Frequency arrows: profile feeds the three stages it touches, each labeled by layer
+\draw[freqarrow] (fband.north -| s1.south) -- (s1.south)
+  node[arrowlabel, right=1pt, fill=white]{\scriptsize Layer 3: hints};
+\draw[freqarrow] (fband.north -| s3.south) -- (s3.south)
+  node[arrowlabel, right=1pt, fill=white]{\scriptsize Layer 1: weights};
+\draw[freqarrow] (fband.north -| s4.south) -- (s4.south)
+  node[arrowlabel, right=1pt, fill=white]{\scriptsize Layer 2: reschedule};
+
+% Final tuning loop-back: after selection, retune materialization on combined project
+\draw[arrow, dashed]
+  (s4.north) to[out=120, in=60]
+  node[arrowlabel, above, fill=white]{final retune}
+  (s3.north);
+
+\end{tikzpicture}%
+}
+\caption{End-to-end pipeline of \tool. The top row shows the four main stages and the artifacts that flow between them; after global selection, a final materialization pass retunes the combined project. The dashed band underneath is the frequency-aware overlay (\S\ref{sec:frequency}): a single frequency profile feeds three of the four stages, contributing structural splitting hints, cost weights for materialization tuning, and schedule corrections at selection.}
+\label{fig:pipeline}
+\end{figure*}
+
+
+
+
+
+
+\tool optimizes a dbt project along three interacting dimensions: model refactoring, materialization, and refresh frequency. The benefit of a refactoring depends on which models will be materialized, the optimal materialization configuration depends on the structure of the DAG, and both depend on how often each model executes. A project with hundreds of models admits an enormous space of candidate refactorings, materialization assignments, and refresh schedules; exhaustive search is infeasible, and the three dimensions cannot be optimized in independent passes without missing interactions or producing decisions that conflict at the boundaries.
+
+
+
+
+
+% % Required preamble (add to main.tex if not already there):
+% % \usepackage{algorithm}
+% % \usepackage{algpseudocode}
+
+% \begin{algorithm}[t]
+% \caption{\tool{} optimization pipeline.}
+% \label{alg:pipeline}
+% \begin{algorithmic}[1]
+% \Require dbt project $P$, frequency profile $\Phi$
+% \Ensure optimized dbt project $P^\star$
+% \State $f \gets \textsc{PropagateFrequencies}(P, \Phi)$
+% \State $\mathcal{G} \gets \textsc{ReuseAnalysis}(P) \cup \textsc{PruneAnalysis}(P)$
+% \Statex \hspace{3.6em} $\cup\ \textsc{FrequencySplitHints}(P, f)$ \Comment{\S\ref{sec:candidate-identification}}
+% \State $\mathcal{C} \gets \textsc{LLMRefactor}(\mathcal{G}, P)$ \Comment{\S\ref{sec:llm-refactoring}}
+% \State $\delta_{\text{orig}} \gets \textsc{MaterializationTune}(P, f)$ \Comment{\S\ref{sec:materialization}}
+% \ForAll{$c \in \mathcal{C}$}
+%   \State $P_c \gets \textsc{Apply}(P, c)$
+%   \State $\Delta_c \gets \delta_{\text{orig}} - \textsc{MaterializationTune}(P_c, f)$
+% \EndFor
+% \State $H \gets \textsc{ConflictGraph}(\mathcal{C})$
+% \State $\mathcal{C}^\star \gets \textsc{SelectILP}(\mathcal{C}, \{\Delta_c\}, H)$ \Comment{\S\ref{sec:selection}}
+% \State $P^\star \gets \textsc{Apply}(P, \mathcal{C}^\star)$
+% \State $\textsc{MaterializationTune}(P^\star, f)$ \Comment{final retune}
+% \State \Return $\textsc{ReconcileSchedule}(P^\star, f)$ \Comment{\S\ref{sec:frequency}}
+% \end{algorithmic}
+% \end{algorithm}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+\tool addresses this challenge with a three-stage pipeline. The first stage \emph{identifies} promising refactoring opportunities. Structural analyses of the project's SQL rank model groups by a fingerprint-based score that estimates the potential benefit of joint refactoring; the top-ranked groups are then passed to an LLM, which proposes one or more concrete refactorings for each. Together, the structural analyses and the LLM constitute the candidate generator: the structural analyses decide \emph{where} in the DAG to look, and the LLM decides \emph{what} refactoring to perform. The second stage \emph{evaluates} each candidate refactoring under its own optimal materialization configuration. A learned cost model predicts slot time for any DAG configuration, and an iterative local linearization procedure uses these predictions to find the materialization assignment that minimizes total cost for the candidate. The third stage \emph{composes} the surviving candidates into a single optimized project. An ILP selects the best non-conflicting subset of refactorings, after which a final materialization pass tunes the combined project. The frequency dimension contributes to the pipeline at three levels: it weights the cost-model-driven decisions during materialization tuning and refactoring selection, it corrects over-scheduled refresh rates so that models run only as often as their inputs change, and it contributes a class of structural refactorings in the first stage, where the LLM identifies models that can be split along frequency boundaries.
+
+The remainder of this section presents the components of \tool in the order they appear in the pipeline. Section~\ref{sec:candidate-identification} describes the structural analyses that identify candidate model groups. Section~\ref{sec:llm-refactoring} describes how the LLM produces concrete refactorings from the resulting subgraphs. Section~\ref{sec:materialization} describes the cost model and the iterative local linearization procedure that finds the best materialization configuration for any given DAG structure. Section~\ref{sec:selection} presents the ILP that selects the best non-conflicting combination of refactorings. Section~\ref{sec:frequency} extends the pipeline with frequency-aware weighting at the materialization and selection stages and introduces the frequency-driven splitting refactoring.
+
+
+
+
+
+\subsection{Candidate Identification}
+\label{sec:candidate-identification}
+
+The first stage of the pipeline identifies regions of the DAG where a refactoring is likely to be worthwhile. A project with hundreds of models admits an enormous number of conceivable refactorings, so applying an LLM to every model group is prohibitively expensive and produces a high rate of trivial proposals. \tool{} addresses this with a division of labor: structural analyses over the project's SQL surface candidate regions whose dataflow exhibits patterns associated with refactoring opportunities, and the LLM examines each region and decides what refactoring, if any, is appropriate. Structural analysis is cheap and is applied to every model in the project; LLM reasoning is expensive and is reserved for regions where structural evidence suggests it is likely to pay off.
+
+\head{Dataflow representation}
+Each model's SQL is compiled into a per-model dataflow representation that captures column derivations, joins, and aggregations as a tree of typed operators, with column references resolved across model boundaries via the project's \texttt{ref()} graph. Consider three models:
+\begin{lstlisting}
+A: SELECT k1, k2, SUM(c1) AS a1 FROM {{ ref('s1') }} GROUP BY k1, k2
+B: SELECT k1, SUM(a1) AS b1 FROM {{ ref('A')  }} GROUP BY k1
+\end{lstlisting}
+Model C performs both aggregations within a single SQL statement. At the SQL level, B's reference to A is opaque: the column \texttt{a1} is just a name produced by some upstream model. The dataflow representation resolves this reference, links the column in B back to its definition in A, and reconstructs the chain:
+\begin{lstlisting}
+s1.c1 -> SUM by (k1, k2) -> SUM by k1 -> B's output
+\end{lstlisting}
+The same chain is contained inside C. The structural correspondence between the two-model composition and the single model is therefore visible in the representation, even though it is hidden by the \texttt{ref()} boundary in the source SQL. The analyses described below operate on this representation, which is what allows them to recognize cross-model patterns that are invisible at the SQL level.
+
+\head{Reuse analysis}
+Reuse analysis identifies groups of models that perform the same expensive operation over related inputs. From each model's dataflow representation, it extracts a structural fingerprint summarizing the model's expensive operations, joins and group-by aggregations, together with their anchor columns (join keys and grouping keys) and input relation lineage. Models whose fingerprints share substantial structure are grouped into candidate sets. Each candidate set is scored by an estimate of joint refactoring potential, which weights the shared operation by its expected cost and by the number of models that share it.
+
+A high reuse score is a \emph{targeting signal}, not an instruction to materialize a shared subexpression. Reuse analysis subsumes the syntactic shared-subexpression case targeted by multi-query optimization and materialized view recommendation, but extends it to semantically equivalent operations that are syntactically dissimilar.
+
+\head{Prune analysis}
+Prune analysis targets joins, in two forms. The first is \emph{redundant joins}: joins whose results are not consumed by any downstream model. These can be eliminated entirely once column lineage from leaf models confirms that no downstream consumer reads from the joined output. Semi-joins fall into this category when the filtering set is statically derivable from columns already present in the probed relation, in which case the join itself can be replaced with a predicate. The second form is \emph{mistimed joins}: joins that are correct in semantics but are computed too soon. When one side of a join feeds into expensive downstream operations whose results do not depend on the other side's columns, the join inflates the input to those operations without contributing to their result. Pushing the join later, after the expensive operations have reduced the data, avoids carrying the join product through them. As an additional pattern, prune analysis also flags unused projected columns whose elimination simplifies upstream definitions.
+
+What distinguishes prune analysis from local dead-code elimination in a single-query optimizer is its scope: a redundant or mistimed join in one model is invisible to a single-query rewriter, which has no view of how downstream models will use the result. Each detected candidate is scored by the cost of the affected operation, weighted by the number of downstream models whose simplified definitions benefit from the change.
+
+\head{From candidates to subgraphs}
+The two analyses produce a ranked stream of candidate model groups. From each group, a subgraph of the DAG is extracted that includes the candidate models together with a configurable neighborhood of upstream and downstream models, so that the LLM has enough surrounding context to reason about correctness. Subgraph size is bounded to keep the LLM input manageable; groups whose neighborhoods exceed the bound are skipped. The next subsection describes how the LLM consumes these subgraphs and produces concrete refactorings.
+
+
+
+
+
+
+
+\subsection{LLM Refactoring}
+\label{sec:llm-refactoring}
+
+Asking an LLM to rewrite SQL that will be deployed against a real warehouse raises three problems. The proposed rewrite may run \emph{slower} than the original, may be \emph{incorrect}, or may be \emph{too expensive to produce naively} when a candidate region contains many models. \tool{} addresses these with a four-stage sequence: subgraph analysis and opportunity proposal, proposal filtering, refactoring, and equivalence verification. A separate, lighter mechanism handles batches of near-duplicate models and is described at the end of the section.
+
+\head{Subgraph analysis and opportunity proposal}
+The first LLM call ingests the subgraph's SQL and dependency graph and produces a domain-level reading of the region: a short semantic summary of each model and an account of the end-to-end business question the subgraph answers. This domain-level read is what allows subsequent stages to recognize semantically equivalent computations expressed in syntactically dissimilar SQL, the capability that distinguishes \tool{} from purely syntactic rewriters. The headline output is a list of \emph{optimization opportunities}: each names the CPU-bound computation it would eliminate or shrink and the mechanism by which it would do so. Opportunities are not yet rewrites; they are proposals to be reviewed before any SQL is generated.
+
+\head{Proposal filtering}
+A second LLM call acts as an adversarial critic over the proposed opportunities. The separation is intentional: a single LLM asked simultaneously for proposals and for skepticism produces neither, with proposal mode dominating. A separate pass instructed to assume the proposer is overconfident behaves differently. Filtering at this point also saves cost, since the refactoring stage that follows is the most token-expensive phase in the pipeline.
+
+The critic looks for both slowdowns and correctness traps. The slowdown case rejects, for instance, proposals that look like reuse-driven savings but add a new write and scan without reducing downstream work. A correctness trap is illustrated in Figure~\ref{fig:critic-catch}: a parent table joins to a multi-tag child to compute per-item flags, and the proposal eliminates the join by reading the tag from a sibling that has been pre-deduplicated to one row per item. Doing so silently drops the secondary tags that the original join admitted. The critic returns one of three verdicts: \emph{approve}, \emph{reject}, or \emph{conditional}. A conditional verdict means the proposal is net-positive only under a specific data property; that property is recorded as a constraint that the refactoring stage must respect.
+
+\begin{figure}[!htbp]
+\begin{minipage}[t]{0.48\linewidth}
+\figsubheader{Original: join admits all tags}
+\begin{lstlisting}[language=SQL]
+SELECT i.item_id,
+  MAX(CASE WHEN t.tag='A'
+    THEN 1 ELSE 0 END) AS flag_a
+FROM {{ ref('items') }} i
+JOIN {{ ref('item_tags') }} t
+  USING (item_id)
+GROUP BY i.item_id
+\end{lstlisting}
+\end{minipage}
+\hfill
+\begin{minipage}[t]{0.48\linewidth}
+\figsubheader{Proposal: drop join, read tag}
+\begin{lstlisting}[language=SQL]
+SELECT s.item_id,
+  CASE WHEN s.tag='A'
+    THEN 1 ELSE 0 END AS flag_a
+FROM {{ ref('items_staged') }} s
+-- items_staged keeps one tag/item;
+-- secondary tags are silently lost
+\end{lstlisting}
+\end{minipage}
+\caption{Correctness trap rejected by the proposal critic. The original aggregates over all tags per item; the proposal reads from a sibling that has been deduplicated to one tag per item, and silently drops the rest.}
+\label{fig:critic-catch}
+\end{figure}
+
+\head{Refactoring}
+The opportunities that survive filtering are passed, together with the analysis and the SQL of the affected models, to a third LLM call that produces concrete refactored SQL. The LLM may rewrite existing models, mark models as removed, or introduce new shared models. Conditional opportunities from the previous stage carry their constraints into this prompt. Models with consumers outside the subgraph may have their internal SQL rewritten but must produce identical output rows, since their contract with downstream consumers is fixed.
+
+\head{Equivalence verification}
+A rewrite that survives filtering may still silently change the data. A bug rejected at the proposal stage can re-emerge inside a more complex rewrite that bundles several opportunities together: the same staged-input shortcut from Figure~\ref{fig:critic-catch}, for instance, can reappear nested inside a consolidated aggregation that the proposal critic approved on other grounds. \tool{} treats equivalence as an empirical question against the project's real data. A fourth LLM call, the \emph{correctness critic}, examines the original-versus-refactored SQL of every rewritten model whose output is externally visible and, for each adopted opportunity, articulates the data invariant that must hold for the rewrite to be semantically safe. Each invariant is rendered as a SQL diagnostic, written so that it returns zero rows when the invariant holds and rows when it is violated. The diagnostics are executed against the target warehouse with a per-query byte cap. A non-empty result is a counterexample drawn from real data: the rewrite changes output. Counterexamples re-enter the pipeline as feedback. The failed invariants are appended to the refactoring prompt, and the LLM is asked to either propose a distinctly different strategy that respects them or restore the original logic. The loop continues until the refactor passes all diagnostics, the LLM declares no further distinct strategies, or a per-group attempt budget is exhausted, in which case the group is reverted to its original SQL and contributes no candidate.
+
+\head{Model families and propagation}
+A single subgraph can contain many near-duplicate models that perform the same operation over different data subsets. The subgraph analysis identifies such groups, designates a single \emph{representative} per group, and records how the other members differ. Only the representative is taken through the four-stage sequence above; once it passes verification, the change is applied to the remaining members by a separate, lighter LLM call per member, executed in parallel. This is a scalability mechanism specific to projects whose models exhibit family structure; in projects without it, the family map collapses to singletons and the main sequence runs over every model directly.
+
+
+
+
+
+
+
+\subsection{Materialization Tuning}
+\label{sec:materialization}
+
+A candidate refactoring does not have a fixed cost: whether it improves the project depends on which of its models are materialized as tables and which are inlined as views, and the right answer differs from one candidate to the next. \tool{} therefore evaluates every candidate under its own optimal materialization assignment, computed by the procedure described in this subsection. The original project, with no refactoring applied, is itself one of these candidates and serves as the baseline against which the others are scored.
+
+\head{Cost of a DAG configuration}
+Given a materialization assignment, the cost of the project is computed by a single topological pass over the DAG. A table incurs its own predicted slot time once per execution and exposes its predicted cardinality to its children; a view incurs no slot time of its own and instead pushes its SQL features and its parents' cardinality forward into every model that consumes it, scaled by the number of times it is referenced. The features a model is scored on are therefore not the raw counts extracted from its own SQL alone but a vector that has accumulated the contributions of every view in its upstream chain. The cost a model pays consequently depends on the materialization of each of its ancestors, and flipping a single node from table to view can change the predicted cost of every descendant.
+
+\head{Cost model}
+Two Huber regression models, trained on the history of instrumented runs of the original project, predict the per-model quantities consumed by the topological pass. The first predicts the cardinality of each materialized table from a set of SQL features extracted by parsing each model's compiled query: counts of joins, equi- and non-equi join keys, predicates broken down by kind (equality, range, IN), group-by clauses and keys, distinct operations, unions, and table scans. The second predicts slot time from a closely related set of features that adds window functions, total aggregations, and order-by clauses. Both predictions are conditioned on the cardinality of the model's parents under the current configuration. Both training and prediction operate on view-expanded feature vectors, so the regression sees, for each model, exactly the work it would actually perform under the configuration in question. Huber loss is used in place of squared error to limit the influence of a small number of very large queries.
+
+\head{Iterative local linearization}
+The total cost is a discrete non-linear function of the materialization vector \(t \in \{0,1\}^{|V|}\) with interactions that propagate through every view chain in the DAG; exact minimization is intractable for projects of realistic size. \tool{} therefore applies iterative local linearization, a standard successive-approximation scheme for discrete non-linearities: linearize the cost around the current configuration, solve the linear surrogate, move, and repeat until the configuration stops changing. The procedure converges to a locally consistent assignment rather than a global optimum, which is the practical price of feasibility.
+
+Concretely, let \(t_i \in \{0,1\}\) be the materialization of node \(i\) (table if \(t_i = 1\), view if \(t_i = 0\)). At iteration \(k\), with the current assignment \(t^{(k)}\) fixed, \tool{} measures two local quantities using the cost model: the baseline build cost \(B^{(k)}_j\) of every node \(j\) under \(t^{(k)}\) with its direct parents forced to tables, and the edge-local delta \(U^{(k)}_{ij}\), the additional cost incurred at \(j\) when only parent \(i\) is flipped to a view (other parents held as tables). Treating \(B^{(k)}\) and \(U^{(k)}\) as constants for the duration of the iteration, the system solves a small ILP for the next assignment \(t^{(k+1)}\):
+\begin{equation*}
+\min_{t,\,y}\; \sum_{j \in V} t_j\, B^{(k)}_j \;+\; \sum_{i \to j \in E} y_{ij}\, U^{(k)}_{ij},
+\end{equation*}
+\begin{equation*}
+\text{s.t.}\quad y_{ij} \le 1 - t_i,\;\; y_{ij} \le t_j,\;\; y_{ij} \ge t_j - t_i,\;\; y_{ij} \ge 0,
+\end{equation*}
+where the auxiliary \(y_{ij} \in [0,1]\) is constrained to take value \((1 - t_i) \wedge t_j\): it is \(1\) precisely when \(j\) executes and reads from a parent \(i\) that has been inlined as a view, and \(0\) otherwise. A node \(j\) thus pays its baseline \(B^{(k)}_j\) when materialized as a table and an additional \(U^{(k)}_{ij}\) for each parent that is a view. To keep each step inside the region where the local coefficients remain valid, the ILP is constrained by a trust-region cap on the number of flips per iteration and a small flip penalty that damps oscillation. The new assignment becomes the current one and the loop repeats; \(B\) and \(U\) are recomputed because flipping a node changes the predicted cardinalities seen by its descendants. The loop terminates on convergence, on revisiting a previously seen assignment, or after a fixed iteration cap. Two pieces of domain knowledge keep the search well behaved: nodes with many descendants are pinned as tables, since inlining them would cause their work to be redundantly recomputed for every consumer, and seed and source tables are fixed as tables throughout, since their materialization is not under the project's control.
+
+\head{From a candidate to a delta}
+For the original project, the procedure above runs directly: every model has a measured cardinality and slot time from the instrumented run, and the loop searches the materialization assignment that minimizes total cost. For a refactored candidate, models that did not exist in the original have no measurements. The candidate's compiled manifest is fed through the same topological pass, with the cost model invoked once per new model to predict its cardinality from its SQL features and the (predicted or measured) cardinality of its parents; from that point the candidate is indistinguishable from the original as far as the optimizer is concerned, and the same iterative loop produces its optimal materialization. The cost of the candidate under that materialization, subtracted from the cost of the original under its own, is the candidate's \emph{delta}: the predicted cost reduction the refactoring delivers when adopted in isolation. The next subsection composes the candidates given these deltas.
+
+
+
+
+
+
+\subsection{Global Selection}
+\label{sec:selection}
+
+The previous stage produces, for each candidate refactoring, a delta computed as if that candidate were adopted alone. Composing the candidates into a single optimized project is not a matter of taking them all: the structural analyses of Section~\ref{sec:candidate} surface overlapping regions of the DAG, so the same model can belong to more than one group, and the LLM has rewritten each group in isolation; applying two refactorings that touch the same model would require a merge that no stage of the pipeline has produced and whose correctness no stage has verified. A separate constraint comes from \emph{within} each group, where the LLM may have proposed several variants of the same refactoring opportunity, of which at most one can be adopted. Global selection picks the subset of candidates that maximizes total delta subject to both restrictions.
+
+\head{Conflict graph}
+Two groups are in conflict when they touch (rewrite, create, or remove) any of the same models. \tool{} computes a conflict graph by intersecting the changed-model sets of every pair of groups; an edge is added whenever the intersection is non-empty. The graph is typically sparse, since the structural analyses tend to surface regions whose dataflow patterns differ, but it is rarely empty: shared upstream models that participate in multiple opportunities are the common source of edges.
+
+\head{ILP selection}
+Let \(x_c \in \{0,1\}\) indicate whether candidate \(c\) is adopted, with delta \(\delta_c\), and let \(z_g \in \{0,1\}\) indicate whether any variant from group \(g\) is adopted. \tool{} solves
+\begin{equation*}
+\max_{x,\,z}\; \sum_{c} \delta_c\, x_c \quad\text{s.t.}\quad \sum_{c \in g} x_c \le z_g \;\;\forall g,\quad z_g + z_{g'} \le 1 \;\;\forall (g, g') \in C,
+\end{equation*}
+where \(C\) is the edge set of the conflict graph. The first constraint enforces that at most one variant per group is adopted; the second enforces that no two conflicting groups are adopted together. The problem is small (one binary per candidate and per group, with a sparse constraint matrix) and is solved exactly by an off-the-shelf MILP solver. Once the subset is fixed, the materialization tuning of Section~\ref{sec:materialization} is run once more on the combined project, since each candidate's delta was measured under its own isolated materialization assignment and the optimal assignment for their combination need not coincide with any one of them.
+
+
+
+
+
+
+
+
+
+
+
+\subsection{Frequency-Aware Optimization}
+\label{sec:frequency}
+
+The previous stages treated every model's slot time as a fixed per-execution cost. In a real dbt project this is an oversimplification: different sources update at different rates, different downstream consumers require fresh output at different rates, and the cost a model contributes to the project is the cost of one execution multiplied by how often it actually executes. \tool{} therefore augments the pipeline with a frequency dimension that enters at three layers. Frequencies are taken from the project's declared schedule at sink models and from observed update rates at source tables, and propagated through the interior of the DAG from these boundaries. Layers 1 and 2 reweight and reschedule the existing project without changing its structure; layer 3 contributes a new class of structural candidates back to the candidate generator of Section~\ref{sec:candidate}.
+
+\head{Layer 1: Frequency as cost weight}
+The materialization tuning of Section~\ref{sec:materialization} and the selection of Section~\ref{sec:selection} both minimize total cost as if every model executed at the same rate. Replacing per-execution slot time with frequency-weighted slot time changes the answer: a refactoring that saves work on a daily-refresh model is worth more than the same per-execution savings on a weekly one. Mechanically, the local coefficients of the iterative linearization are reweighted before the ILP runs:
+\begin{equation*}
+B^{(k)}_j \leftarrow f_j \cdot B^{(k)}_j, \qquad U^{(k)}_{ij} \leftarrow f_j \cdot U^{(k)}_{ij},
+\end{equation*}
+where \(f_j\) is node \(j\)'s effective frequency. The rest of Section~\ref{sec:materialization} is unchanged, and the selection ILP inherits the same reweighting through the deltas it consumes.
+
+\head{Layer 2: Reconciling scheduled and effective frequency}
+A model's effective frequency is not the rate at which its schedule fires; it is the rate at which its schedule fires \emph{and} produces new output. Each model has a \emph{demand} frequency $f_j^{\text{demand}}$, set by the rate at which its downstream consumers need fresh output, and a \emph{data-changing} frequency $f_j^{\text{data}}$, set by the rate at which any of its upstream inputs actually change. The rate at which the model contributes useful work is
+\begin{equation*}
+f_j = \min\!\left(f_j^{\text{demand}},\, f_j^{\text{data}}\right).
+\end{equation*}
+Where the scheduled rate exceeds $f_j$, the model is being over-scheduled: it executes, reads its inputs, and produces output identical to what it produced last time. \tool{} flags such models and reduces their schedule to $f_j$. This layer changes no SQL and no materialization, only the schedule, but the saving is immediate: every redundant execution is eliminated outright. The same $f_j$ is what layer 1 uses as the cost weight, so the two layers compose.
+
+\head{Layer 3: Frequency-driven splitting hints}
+The first two layers leave the DAG structure intact. The third generates new structural candidates of a kind that the analyses of Section~\ref{sec:candidate} cannot identify on dataflow shape alone. When a model has parents with different data-changing frequencies, it inherits the fastest one; any work inside the model that depends only on slow-changing parents is therefore re-executed at the fast rate even though its inputs have not changed. \tool{} identifies models whose parent frequencies are heterogeneous and whose slow-side computation is non-trivial, and emits the location to the candidate generator as a hint, alongside the reuse and prune analyses of Section~\ref{sec:candidate}. The hint enters the LLM stage in the same form as any other candidate region; the LLM proposes a frequency-split refactoring of the kind illustrated in motivating Example~3, in which the slow-side computation is extracted into a separate model that runs on the slow cadence and the original model becomes a lightweight join over its outputs. From there the candidate flows through the same filtering, refactoring, verification, scoring, and selection stages as any other, with layers 1 and 2 active throughout.

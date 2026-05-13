@@ -1,0 +1,264 @@
+\section{Iterative Local Linearization for Materialization Tuning}\label{sec:ilp}
+
+
+% --- Suggested packages in your preamble ---
+% \usepackage{amsmath,amssymb,mathtools}
+% \usepackage{listings}
+% \lstset{basicstyle=\ttfamily\small,breaklines=true}
+
+% \section{Iterative Local Linearization for Slot-Time Materialization Tuning}
+
+We select materializations on a fixed DAG $G=(V,E)$ to minimize end-to-end \emph{slot time}.  
+We adopt an \emph{iterative local linearization} scheme: at iteration $k$, we measure
+locally valid coefficients around the current materialization $t^{(k)}$, solve a
+small ILP, apply the new configuration, and repeat until stable.
+
+\subsection{Notation}
+For each node $i\in V$ and edge $i \rightarrow j\in E$:
+\begin{itemize}
+  \item $t_i\in\{0,1\}$: $1$ if $i$ is materialized as a \textbf{table}, $0$ if \textbf{view}/ephemeral.
+  \item Targets $T\subseteq V$ must be built: enforce $t_j=1$ for all $j\in T$.
+  \item Linearization helper on $i \rightarrow j$:
+  \[
+     y_{ij}\in[0,1] \quad \text{intended as } ((1-t_i)\wedge t_j).
+  \]
+  \item Fortet/McCormick constraints for $y_{ij}$:
+  \[
+  y_{ij}\le 1-t_i,\qquad y_{ij}\le t_j,\qquad y_{ij}\ge t_j - t_i,\qquad y_{ij}\ge 0.
+  \]
+\end{itemize}
+
+\subsection{Local Measurements at Iteration $k$}
+
+\head{Current materialization} $t^{(k)} \in\{0,1\}^{|V|}$ (1=table, 0=view/ephemeral).
+
+% Let $t^{(k)}$ be the current materialization (1=table, 0=view).
+
+\head{Baseline build cost} For each child $j$, $B_j^{(k)}$: slot time to build $j$ with its direct parents forced to tables; all other nodes remain as in $t^{(k)}$.
+
+
+\head{Edge-local deltas} For each edge $i \rightarrow j$, $U_{ij}^{(k)}$: extra slot time in $j$ when \emph{only} parent $i$ is flipped to view/ephemeral (others as in $t^{(k)}$; $j$’s other parents treated as tables).
+
+
+
+
+\subsection{ILP}
+
+\head{Variables}
+Binary $t_i\in\{0,1\}$ for each node $i$; continuous $y_{ij}\in[0,1]$ for each edge $i \rightarrow j$ with the linearization constraints above.
+
+\head{Constraints}
+Targets: $t_j=1$ for all $j\in T$.
+
+\head{Objective}
+\[
+\min \quad \sum_{j\in V} t_j\, B_j^{(k)} \;+\; \sum_{i \rightarrow j \in E} y_{ij}\, U_{ij}^{(k)}.
+\]
+\emph{Interpretation:} If all parents of $j$ are tables, $y_{ij}=0$ and we pay the baseline $B_j^{(k)}$.  
+When a parent $i$ is a view and $j$ executes, $y_{ij}=1$ and we add the locally measured penalty $U_{ij}^{(k)}$.
+
+\subsection{Stability Mechanisms}
+
+To avoid large nonlocal moves where the linear model is less accurate, use either a
+\emph{trust region} or an \emph{explicit flip penalty}.
+
+\head{Trust region (hard cap)}
+Introduce $d_i\in\{0,1\}$ s.t.
+\[
+d_i \ge t_i - t_i^{(k)},\qquad d_i \ge t_i^{(k)} - t_i,
+\]
+and constrain $\sum_i d_i \le L$ (change at most $L$ nodes per iteration).
+
+\head{Flip penalty (soft)}
+Add $\lambda \sum_i d_i$ to the objective instead of a hard cap, with the same
+definitions of $d_i$ above; tune $\lambda$ to limit churn.
+
+\subsection{Update Rule}
+
+Solve the ILP to obtain $t^{(k+1)}$. If $t^{(k+1)}=t^{(k)}$ or the relative improvement is below a tolerance $\varepsilon$, stop; otherwise set $k\leftarrow k{+}1$, recompute the local baselines $\{B_j^{(k)}\}$ and deltas $\{U_{ij}^{(k)}\}$ around the new point $t^{(k)}$, and repeat.
+
+
+
+% \clearpage
+
+
+
+% \subsection{Minimal Iteration (Pseudocode)}
+% \begin{algorithm}[H]\small
+% \caption{Iterative local linearization}
+% \begin{algorithmic}[1]
+% \State $t \gets \textsc{CurrentMaterializations}()$
+% \For{$k=1$ \textbf{to} $K$}
+%   \State $B \gets \textsc{MeasureSlotBaselines}(t)$ \Comment{$B_j^{(k)}$: parents of $j$ as tables}
+%   \State $U \gets \textsc{MeasureSlotEdgeDeltas}(t,B)$ \Comment{$U_{ij}^{(k)}$: flip only $i$ to view}
+%   \State $\mathit{ILP} \gets \textsc{BuildILP}(B,U;\ t_{\text{ref}}{=}t,\ \text{trust\_region}{=}\text{true})$
+%   \State $t^{\text{new}} \gets \textsc{SolveILP}(\mathit{ILP};\ \text{warm\_start}{=}t)$
+%   \If{$\textsc{Converged}(t^{\text{new}},t)$} \textbf{break} \EndIf
+%   \State \textsc{ApplyMaterializations}($t^{\text{new}}$); $t \gets t^{\text{new}}$
+% \EndFor
+% \end{algorithmic}
+% \end{algorithm}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+\begin{comment}
+    
+\paragraph{Baseline per child.}
+
+% \[
+% B_j^{(k)} \;=\; \text{estimated slot\_ms to build $j$ when $j$ executes and \emph{its parents are treated as tables}, while all other nodes remain as in } t^{(k)}.
+% \]
+\[
+B_j^{(k)} \coloneqq \cost_j\!\big( \override{t^{(k)}}{\pred(j)}{\mathbf{1}} \big)
+\]
+\noindent\emph{where } $\override{t^{(k)}}{\pred(j)}{\mathbf{1}}$ \emph{is the vector equal to $t^{(k)}$ except the entries for } $\pred(j)$ \emph{are set to $1$ (table).}
+This yields a consistent local baseline for $j$ around $t^{(k)}$.
+
+\paragraph{Edge-local deltas.}
+For each edge $i \rightarrow j$, define the local delta (extra slot\_ms in $j$) if $i$ is not materialized:
+\[
+U_{ij}^{(k)} \;=\;
+\text{cost}_j\!\left(\text{flip only } i \text{ to view; others as in } t^{(k)} \text{ with $j$'s parents treated as tables}\right)
+\;-\; B_j^{(k)}.
+\]
+Optionally clamp tiny magnitudes to $0$ to reduce estimator noise.
+
+
+
+We select materializations on a fixed DAG $G=(V,E)$ to minimize end-to-end \emph{slot time}.  
+We adopt an \emph{iterative local linearization} scheme: at iteration $k$, we measure
+locally valid coefficients around the current materialization $t^{(k)}$, solve a
+small ILP, apply the new configuration, and repeat until stable.
+
+\subsection{Notation (common)}
+For each node $i\in V$ and edge $i \rightarrow j\in E$:
+\begin{itemize}
+  \item $t_i\in\{0,1\}$: $1$ if $i$ is materialized as a \textbf{table}, $0$ if \textbf{view}/ephemeral.
+  \item Targets $T\subseteq V$ must be built: enforce $t_j=1$ for all $j\in T$.
+  \item Linearization helper on $i \rightarrow j$:
+  \[
+     y_{ij}\in[0,1] \quad \text{intended as } ((1-t_i)\wedge t_j).
+  \]
+  \item Fortet/McCormick constraints for $y_{ij}$:
+  \[
+  y_{ij}\le 1-t_i,\qquad y_{ij}\le t_j,\qquad y_{ij}\ge t_j - t_i,\qquad y_{ij}\ge 0.
+  \]
+\end{itemize}
+
+\subsection{Local Measurements at Iteration $k$}
+
+\head{Current materialization} $t^{(k)} \in\{0,1\}^{|V|}$ (1=table, 0=view/ephemeral).
+
+% Let $t^{(k)}$ be the current materialization (1=table, 0=view).
+
+\head{Baseline build cost} For each child $j$, $B_j^{(k)}$: slot time to build $j$ with its direct parents forced to tables; all other nodes remain as in $t^{(k)}$.
+
+
+\head{Edge-local deltas} For each edge $i \rightarrow j$, $U_{ij}^{(k)}$: extra slot time in $j$ when \emph{only} parent $i$ is flipped to view/ephemeral (others as in $t^{(k)}$; $j$’s other parents treated as tables).
+
+
+
+
+\subsection{ILP (Baseline-plus-Deltas Form)}
+
+\head{Variables}
+Binary $t_i\in\{0,1\}$ for each node $i$; continuous $y_{ij}\in[0,1]$ for each edge $i \rightarrow j$ with the linearization constraints above.
+
+\head{Constraints}
+Targets: $t_j=1$ for all $j\in T$.
+
+\head{Objective}
+\[
+\min \quad \sum_{j\in V} t_j\, B_j^{(k)} \;+\; \sum_{(i,j)\in E} y_{ij}\, U_{ij}^{(k)}.
+\]
+\emph{Interpretation:} If all parents of $j$ are tables, $y_{ij}=0$ and we pay the baseline $B_j^{(k)}$.  
+When a parent $i$ is a view and $j$ executes, $y_{ij}=1$ and we add the locally measured penalty $U_{ij}^{(k)}$.
+
+\subsection{Stability Mechanisms (Recommended)}
+
+To avoid large nonlocal moves where the linear model is less accurate, use either a
+\emph{trust region} or an \emph{explicit flip penalty}.
+
+\paragraph{Trust region (hard cap).}
+Introduce $d_i\in\{0,1\}$ s.t.
+\[
+d_i \ge t_i - t_i^{(k)},\qquad d_i \ge t_i^{(k)} - t_i,
+\]
+and constrain $\sum_i d_i \le L$ (change at most $L$ nodes per iteration).
+
+\paragraph{Flip penalty (soft).}
+Add $\lambda \sum_i d_i$ to the objective instead of a hard cap, with the same
+definitions of $d_i$ above; tune $\lambda$ to limit churn.
+
+\subsection{Update Rule}
+
+Solve the ILP to obtain $t^{(k+1)}$. If $t^{(k+1)}=t^{(k)}$ or the relative improvement is below a tolerance $\varepsilon$, stop; otherwise set $k\leftarrow k{+}1$, recompute the local baselines $\{B_j^{(k)}\}$ and deltas $\{U_{ij}^{(k)}\}$ around the new point $t^{(k)}$, and repeat.
+
+\subsection{Handling Strong Parent Interactions (Optional)}
+
+If a child $j$ has two view parents $(i,\ell)$ that interact strongly (e.g., joins that blow up when both are inlined), include a small number of pairwise corrections. Introduce $z_{i\ell j}\in[0,1]$ for the AND of two open edges:
+\[
+z_{i\ell j}\le y_{ij},\qquad z_{i\ell j}\le y_{\ell j},\qquad z_{i\ell j}\ge y_{ij}+y_{\ell j}-1,
+\]
+and add a measured second-order delta $U_{i\ell,j}^{(2,k)}$ around $t^{(k)}$:
+\[
+\min \;\; \sum_{j} t_j B_j^{(k)} \;+\; \sum_{(i,j)} y_{ij} U_{ij}^{(k)} \;+\; \sum_{(i<\ell,\,j)} z_{i\ell j} \, U_{i\ell,j}^{(2,k)}.
+\]
+
+========================================
+
+
+\subsection{Handling Strong Parent Interactions (Optional)}
+
+If a child $j$ has two view parents $(i,\ell)$ that interact strongly (e.g., joins that blow up when both are inlined), include a small number of pairwise corrections. Introduce $z_{i\ell j}\in[0,1]$ for the AND of two open edges:
+\[
+z_{i\ell j}\le y_{ij},\qquad z_{i\ell j}\le y_{\ell j},\qquad z_{i\ell j}\ge y_{ij}+y_{\ell j}-1,
+\]
+and add a measured second-order delta $U_{i\ell,j}^{(2,k)}$ around $t^{(k)}$:
+\[
+\min \;\; \sum_{j} t_j B_j^{(k)} \;+\; \sum_{(i,j)} y_{ij} U_{ij}^{(k)} \;+\; \sum_{(i<\ell,\,j)} z_{i\ell j} \, U_{i\ell,j}^{(2,k)}.
+\]
+Include only the largest few pairs to keep the model compact.
+
+
+========================================
+
+
+
+% \subsection{Minimal Iteration Pseudocode}
+
+% \begin{lstlisting}
+% t = current_materializations()   # dict: node -> {0,1}
+% for k in range(max_iters):
+%     # Local measurements around t^(k):
+%     B = measure_slot_baselines(t)      # B_j^(k): parents of j treated as tables
+%     U = measure_slot_edge_deltas(t, B) # U_ij^(k): flip-only-i to view
+
+%     # Build ILP (Baseline-plus-Deltas form) with trust region or flip penalty:
+%     ilp = build_slot_ilp_baseline_plus_deltas(B, U, t_ref=t, trust_region=True)
+
+%     t_new = solve(ilp, warm_start=t)
+%     if converged(t_new, t): break
+
+%     apply_materializations(t_new)  # update project to new choice
+%     t = t_new
+% \end{lstlisting}
+
+
+
+
+\end{comment}
