@@ -1,7 +1,6 @@
 % !TEX root = ../VLDB-2026-DAGSmith-Dependency-Aware-Rewriting-for-dbt-Style-SQL-Pipelines.tex
 \section{Introduction}\label{sec:intro}
 
-\introhead{Trend}
 Modern analytics is shifting from human-written, isolated SQL queries to large, continuously maintained SQL programs. Data teams are asked to serve more stakeholders, combine more sources, support AI-facing datasets, and expose governed data products faster; at the same time, BI tools, analytics engineering frameworks, and code-generation assistants increasingly generate or maintain SQL on behalf of users. dbt Labs reports that 70\% of analytics professionals already use AI for code development, 57\% still spend most workdays maintaining or organizing datasets, and nearly 65\% believe enabling nontechnical users to create transformed and governed datasets would improve organizational efficiency~\cite{dbt2025state}. The consequence is an efficiency gap: organizations and automated tools produce increasingly large, repetitive, and semantically rich SQL pipelines, while database optimizers still see mostly one submitted statement at a time.
 
 \introhead{Query rewriting}
