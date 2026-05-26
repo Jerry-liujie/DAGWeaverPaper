@@ -1,0 +1,17 @@
+% !TEX root = ../VLDB-2026-DAGSmith-Dependency-Aware-Rewriting-for-dbt-Style-SQL-Pipelines.tex
+\section{Evaluation Plan}
+\label{sec:eval}
+
+This draft currently focuses on problem formulation and system design. The final version should evaluate \tool along four questions: whether it reduces end-to-end warehouse cost, which classes of dependency-aware refactorings account for the gains, how often the verification loop rejects unsafe rewrites, and how the benefits vary with workload frequency skew and DAG size.
+
+\subsection{Workloads and Baselines}
+
+The evaluation should include at least one real dbt project, one SQLMesh- or warehouse-task-style pipeline when available, and semi-synthetic benchmarks derived from recurring analytics pipelines. Natural baselines include the original DAG, materialization-only tuning, schedule-only tuning, structural analyses without LLM refactoring, and single-query rewrite systems that do not cross node boundaries.
+
+\subsection{Metrics}
+
+Primary metrics should include total slot time or warehouse cost over a fixed horizon, refresh latency at the DAG sinks, the number of nodes changed, and verification pass rate. Secondary diagnostics should measure optimizer runtime, LLM usage, and the distribution of wins across semantic reuse, contract-aware rewriting, computation placement, materialization coupling, and freshness-driven restructuring.
+
+\subsection{Ablations}
+
+The final paper should isolate the contribution of each layer: candidate identification, proposal filtering, equivalence diagnostics, materialization tuning, and frequency-aware reasoning. A particularly important ablation is whether frequency-aware splitting produces gains that materialization-only optimization cannot recover.

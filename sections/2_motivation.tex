@@ -1,59 +1,142 @@
-\section{The dbt Optimization Setting}
+% !TEX root = ../VLDB-2026-DAGSmith-Dependency-Aware-Rewriting-for-dbt-Style-SQL-Pipelines.tex
+\section{Opportunities in SQL Pipeline DAGs}
 \label{sec:motivating}
 
-Before presenting our approach, we describe the optimization setting that \tool targets and illustrate, through three examples drawn from or inspired by real-world analytics pipelines, the kinds of cross-model optimizations that this setting enables but that fall outside the reach of existing techniques.
+Before presenting our approach, we describe the optimization setting that \tool targets and illustrate, through three examples drawn from or inspired by real-world analytics pipelines, the kinds of dependency-aware optimizations that this setting enables but that fall outside the reach of existing techniques.
 
-\subsection{What is a dbt Project?}
+\begin{figure*}[t]
+\centering
+
+\begin{tikzpicture}[
+  font=\small,
+  node distance=5mm and 7mm,
+  src/.style={draw, rounded corners=2pt, fill=gray!12,
+              minimum width=14mm, minimum height=8mm,
+              align=center, font=\scriptsize},
+  model/.style={draw, rounded corners=2pt, fill=white,
+                minimum width=20mm, minimum height=6mm,
+                align=center, font=\scriptsize},
+  newmodel/.style={draw, rounded corners=2pt, fill=blue!8, thick,
+                   minimum width=20mm, minimum height=6mm,
+                   align=center, font=\scriptsize},
+  edge/.style={-{Stealth[length=1.5mm]}, thin, gray!70!black},
+  annot/.style={font=\scriptsize\bfseries, color=blue!50!black,
+                draw=blue!50!black, circle, inner sep=0pt,
+                minimum size=3.5mm, fill=blue!8},
+]
+
+\node[font=\bfseries\small] (beforehdr) at (0,0) {Before};
+\node[src, below=3mm of beforehdr.south west, anchor=north west] (orders0)
+  {orders\\\textcolor{red!60!black}{\itshape hourly}};
+\node[src, below=3mm of orders0] (catalog0)
+  {catalog\\\textcolor{red!60!black}{\itshape weekly}};
+\node[model, right=18mm of $(orders0)!0.5!(catalog0)$] (enr0) {orders\_enriched};
+\node[model, above right=2mm and 8mm of enr0] (rev0) {revenue\_by\_tier};
+\node[model, below right=2mm and 8mm of enr0] (top0) {top\_products};
+\draw[edge] (orders0) -- (enr0);
+\draw[edge] (catalog0) -- (enr0);
+\draw[edge] (enr0) -- (rev0);
+\draw[edge] (enr0) -- (top0);
+\node[font=\scriptsize\itshape, color=red!50!black, below=0mm of enr0, align=center]
+  {expensive\\CASE};
+
+\node[font=\bfseries\small, right=72mm of beforehdr] (afterhdr) {After};
+\node[src, below=3mm of afterhdr.south west, anchor=north west] (orders1)
+  {orders\\\textcolor{red!60!black}{\itshape hourly}};
+\node[src, below=3mm of orders1] (catalog1)
+  {catalog\\\textcolor{red!60!black}{\itshape weekly}};
+\node[newmodel, right=6mm of catalog1] (ptiers1) {product\_tiers};
+\node[model, right=6mm of orders1] (enr1) {orders\_enriched};
+\node[newmodel, right=4mm of enr1, yshift=-3mm] (tagg1) {tier\_agg};
+\node[model, above right=1mm and 4mm of tagg1] (rev1) {revenue\_by\_tier};
+\node[model, below right=1mm and 4mm of tagg1] (top1) {top\_products};
+\draw[edge] (orders1) -- (enr1);
+\draw[edge] (catalog1) -- (ptiers1);
+\draw[edge] (ptiers1) -- (enr1);
+\draw[edge] (enr1) -- (tagg1);
+\draw[edge] (tagg1) -- (rev1);
+\draw[edge] (tagg1) -- (top1);
+\node[annot] at ($(tagg1.north) + (0,2mm)$) {1};
+\node[annot] at ($(enr1.north) + (0,2mm)$) {2};
+\node[annot] at ($(tagg1.south) + (0,-2mm)$) {3};
+\node[annot] at ($(ptiers1.north) + (0,2mm)$) {4};
+
+\end{tikzpicture}
+
+\vspace{2mm}
+
+\begin{minipage}{0.97\textwidth}
+\footnotesize
+\begin{tabular}{@{}r@{\hspace{1.5mm}}p{0.92\textwidth}@{}}
+\textbf{(1)} & \emph{Cross-boundary semantics.} The optimizer can interpret a node by reading the SQL definitions around it, not just the node's own query text. \\[0.5mm]
+\textbf{(2)} & \emph{Intermediate contract freedom.} The optimizer can narrow, split, merge, or remove internal nodes as long as externally visible outputs are preserved. \\[0.5mm]
+\textbf{(3)} & \emph{Rewrite-materialization coupling.} A shared intermediate is useful only under the right materialization choice; graph rewriting and physicalization must be optimized together. \\[0.5mm]
+\textbf{(4)} & \emph{Freshness-aware recomputation.} The expensive classification depends only on weekly data but lives inside an hourly model; splitting it onto the slow cadence requires a DAG rewrite invisible to per-query cost. \\
+\end{tabular}
+\end{minipage}
+
+\caption{A compact example of the optimization opportunities exposed by an explicit SQL pipeline DAG. Once dependencies are visible, the optimizer can reason across node boundaries, rewrite internal contracts, couple refactoring with materialization, and split slow-changing logic off fast refresh paths.}
+\label{fig:intro-example}
+\end{figure*}
+
+\subsection{Setting}
 \label{sec:dbt-setting}
 
-A dbt project is a directed acyclic graph (DAG) of SQL transformations, called \emph{models}.
-Each model is a SQL transformation that produces a single output relation;
-in this paper we focus on the standard \texttt{view} and \texttt{table} materialization modes.
-Models reference one another through an explicit \texttt{ref()} construct that defines
-the dependency edges of the DAG.
-Each model is configured to be either \emph{materialized} as a physical table or
-expanded inline as a \emph{view}.
-The project is executed periodically against a target data warehouse:
-when a model is run, dbt resolves its \texttt{ref()} calls, substitutes the appropriate
-table reference or subquery, and submits the resulting SQL to the warehouse.
+A \emph{SQL pipeline DAG} is a directed acyclic graph \(G=(V,E)\) in which each node is a relational transformation or a persisted relational asset, and each edge records that one node consumes the output of another. A node may be implemented as a SQL model, a notebook cell that issues SQL, a warehouse task, or a materialized table maintained by an orchestration framework. The graph may be declared directly, as in Airflow~\cite{airflowDags} and Argo~\cite{argoDag}, inferred from dataflow, as in Prefect~\cite{prefectTasks}, or induced by model references, as in dbt~\cite{dbtLineage} and SQLMesh~\cite{sqlmeshOverview}. In asset-oriented systems such as Dagster~\cite{dagsterAssets}, the same idea appears as an asset graph: nodes are persistent assets and edges describe how one asset is derived from another.
 
-This setting differs from the workloads targeted by traditional query optimization in three ways that matter for our problem.
+dbt is the running example in this paper because its SQL model boundaries and \texttt{ref()} dependencies make the setting especially explicit. However, the optimization problem is broader. Databricks Workflows~\cite{databricksJobs} and Lakeflow Jobs~\cite{databricksJobs} expose task dependencies as a job DAG; Databricks' medallion architecture~\cite{databricksMedallion} encourages multi-hop transformations from bronze to silver to gold tables; Luigi~\cite{luigiDocs} and the systems above all represent recurring data work through dependency graphs. \tool targets the subset of these pipelines where the node logic is available as SQL, or can be compiled to SQL, so that the optimizer can reason about relational semantics rather than only task ordering.
 
-\head{Full DAG visibility}
-The optimizer has access to the complete SQL definition of every model in the project, the dependency structure that connects them, and the materialization configuration of each model.
-This is a stronger form of visibility than what is available to a database query optimizer, which rewrites one query at a time, or to multi-query optimization (MQO)~\cite{sellis1988multiple}, which sees a set of independent queries.
-In both cases, the optimizer reasons over a flat collection of queries; in the dbt setting, it reasons over a dependency graph of transformations whose structure is itself under its control.
-This shift in scope, from query rewriting to graph-level restructuring, is what makes optimizations such as merging, splitting, or inventing new intermediate models meaningful.
+This setting differs from traditional query optimization in six ways that matter for our problem. Figure~\ref{fig:intro-example} previews several of the changes these differences make possible.
 
-\head{Project stability}
-A dbt project is a maintained software artifact, not an ad-hoc query workload.
-It changes only when developers modify the underlying business logic or data model, not on every execution.
-Between such changes, the same DAG is executed on a recurring schedule, often many times per day.
-This stability justifies investing optimization effort that would not pay off in an online query processing setting: the cost of analysis (including potentially expensive cross-model reasoning) is amortized over many scheduled executions of the same DAG.
+\head{\textbf{(1) Cross-boundary semantics}}
+The optimizer can interpret a node by reading the SQL definitions around it. Parent, sibling, and downstream nodes often explain why a relation exists, which columns matter, and whether a dependency is semantically necessary. This is stronger than expanding a view inside one query: the optimizer reasons over maintained source definitions and their relationships, not just over a single compiled statement.
 
-\head{Heterogeneous refresh patterns}
-Different sources update at different rates, and different downstream consumers (dashboards, reports, downstream pipelines) require fresh results at different rates.
-The refresh frequency of a model is therefore not a property of the model in isolation but is shaped by both its upstream sources and its downstream consumers.
-Two consequences follow.
-First, a model can sometimes be skipped entirely when its upstream inputs have not changed since the last run, so the effective cost of a model depends on how often it must actually be recomputed, not on how often the schedule fires.
-Second, structural decisions about the DAG are not independent of refresh scheduling: splitting a model along a frequency boundary can move expensive computation onto a slower cadence, while merging two models can force the combined result to refresh at the rate of the faster input.
-Optimizing the DAG therefore requires reasoning about structure and refresh rates jointly.
- 
-These three properties (visibility, stability, and frequency heterogeneity) together define a distinct optimization setting.
-The optimizer is reasoning not about a query but about a \emph{program}: a stable DAG of SQL transformations whose structure, materialization, and refresh schedule are jointly under its control.
-A real dbt project may contain hundreds of models, and the space of possible refactorings, materialization choices, and frequency-aware splits is far too large for developers to explore systematically by hand; this motivates the need for an automated optimizer rather than a guidebook of best practices.
+\head{\textbf{(2) Intermediate contract freedom}}
+Not every node in the DAG has the same semantic status. Sinks consumed by dashboards, downstream pipelines, applications, or ML features are externally visible contracts. Many intermediate nodes are implementation details. A dependency-aware optimizer can therefore preserve the outputs that matter while changing intermediate schemas, boundaries, and materializations. A single-query rewriter normally cannot make this distinction because the query boundary itself is the contract.
 
-\subsection{Motivating Examples}
+\head{\textbf{(3) Non-local semantic reuse}}
+The DAG is a maintained software artifact. Teams version it, review it, test it, document it, and execute it repeatedly. This stability makes source-to-source optimization worthwhile: expensive analysis can be amortized over many recurring executions, and semantically redundant work can be found across distant branches rather than only inside one query text. This is especially relevant as projects grow. dbt Labs notes that what counted as a large project has grown from roughly 150 models to 500, then 1,000, and that an appreciable fraction of users now work in projects with 5,000 models or more~\cite{dbtComplexity}. dbt's own internal analytics project reportedly processes roughly 1,500 models across multiple jobs and schedules~\cite{dbtComputeReduction}.
+
+\head{\textbf{(4) Rewrite-materialization coupling}}
+Whether a node should be a table, view, incremental model, or ephemeral expression depends on its parents, descendants, fanout, refresh behavior, and the refactorings under consideration. A shared intermediate may be valuable as a table and harmful as a view; a narrow projection may make an upstream table unnecessary; merging two nodes may reduce writes but increase downstream recomputation. Materialization is therefore not a local property of one model.
+
+\head{\textbf{(5) Freshness-aware recomputation}}
+Different sources update at different rates, and different downstream consumers require fresh results at different rates. A model's useful execution frequency is shaped by both upstream data-change rates and downstream demand. In cloud warehouses, these rates translate directly into cost and latency objectives: if a weekly source feeds an hourly model, any computation that depends only on the weekly source is being repeated unnecessarily; if an output is consumed daily, hourly refresh may be waste even when the query itself is individually optimized.
+
+\head{\textbf{(6) Global rewrite composition}}
+DAG-level rewrites interact. Two local changes may touch the same node, make incompatible assumptions about an intermediate contract, or change the materialization choice that makes another rewrite profitable. A dependency-aware optimizer therefore needs a global composition step that selects a compatible set of rewrites rather than greedily applying every local improvement.
+
+Together, these properties define a distinct optimization setting. The optimizer is reasoning not about one query, nor merely about a set of independent queries, but about a stable SQL pipeline program whose graph structure, intermediate contracts, materialization choices, and refresh behavior interact.
+
+\subsection{Opportunity Taxonomy}
 \label{sec:motivating-examples}
 
-We illustrate three classes of optimization that \tool discovers.
-Each requires the optimizer to read and reason about SQL definitions \emph{across} model boundaries within the DAG, a capability that the dbt setting uniquely affords.
-The SQL in each example is simplified for presentation; domain-specific details are abstracted away.
+The properties above create a broader opportunity space than the three examples in this section can cover exhaustively. We organize the space into six recurring classes that map directly to the components of \tool in Section~\ref{sec:approach}.
+
+\head{Cross-boundary semantics}
+The optimizer can read related node definitions to discover semantic facts that are not present in the current SQL file. This enables rewrites such as replacing a dependency on a sibling node with an equivalent predicate over a shared parent.
+
+\head{Intermediate contract freedom}
+Intermediate models often exist for developer organization rather than as externally visible contracts. If the final outputs are preserved, the optimizer may narrow schemas, remove unused columns, change intermediate grouping levels, or replace an intermediate with a cheaper equivalent.
+
+\head{Non-local semantic reuse}
+Multiple branches may compute the same logical quantity using different syntax, predicates, joins, or naming conventions. The opportunity is to factor the shared computation into a new model or asset, then rewrite consumers to use it.
+
+\head{Rewrite-materialization coupling}
+The best structure depends on which nodes are persisted. A rewrite that creates a shared node only helps if that node is materialized appropriately; inlining it as a view may simply duplicate the work downstream.
+
+\head{Freshness-aware recomputation}
+The cost of a node is not just its per-run cost. It is the cost multiplied by how often the node must produce useful new output. The optimizer can skip over-scheduled work, move slow-changing logic onto a slow cadence, or avoid forcing a slow branch to refresh at the rate of a fast one.
+
+\head{Global rewrite composition}
+Local wins can conflict. Two refactorings may touch the same model, make incompatible assumptions about an intermediate contract, or interact through materialization choices. A dependency-aware optimizer needs a global selection step rather than a greedy sequence of local rewrites.
+
+We now illustrate three representative classes that \tool discovers. Each requires the optimizer to read and reason about SQL definitions \emph{across} model boundaries within the DAG. The SQL in each example is simplified for presentation; domain-specific details are abstracted away.
 
 %==============================================================
 % EXAMPLE 1: Semantic Factorization
 %==============================================================
-\head{Example 1: Cross-Model Semantic Factorization}
+\head{Example 1: Non-local semantic reuse}
 A pipeline contains seven classifier models that each tag orders with a service category (\texttt{dialysis}, \texttt{psychiatric}, and five others).
 The input is a \texttt{claims} table in which each row represents one item of an order, so a single order has many rows.
 Each classifier scans \texttt{claims}, keeps rows whose codes match its category's code list, and returns the distinct \texttt{order\_id}s of those rows.
@@ -119,13 +202,13 @@ Seven full scans and seven independent grouping passes over \texttt{claims} are 
  
 This optimization requires three capabilities that go beyond traditional techniques.
 First, the optimizer must recognize that seven syntactically dissimilar models perform the same semantic operation, which syntactic subexpression matching, the basis of multi-query optimization (MQO)~\cite{sellis1988multiple} and common subexpression elimination, cannot do.
-Second, it must \emph{invent} a new intermediate model absent from the original project; materialized view recommendation tools~\cite{agrawal2000automated, bigsubs} synthesize candidate views, but they too rely on syntactic subexpression mining, of which the seven classifiers share none.
-Third, it must rewrite the dependent models to consume the new intermediate while preserving end-to-end equivalence, a multi-model restructuring that single-query rewrite systems~\cite{wang2024wetune,zhou2024r} do not attempt.
+Second, it must \emph{invent} a new intermediate model absent from the original project; materialized view recommendation tools~\cite{agrawal2000automated} synthesize candidate views, but they too rely on syntactic subexpression mining, of which the seven classifiers share none.
+Third, it must rewrite the dependent models to consume the new intermediate while preserving end-to-end equivalence, a multi-model restructuring that single-query rewrite systems~\cite{wetune,rbot} do not attempt.
 
 %==============================================================
 % EXAMPLE 2: Cross-Boundary Reasoning
 %==============================================================
-\head{Example 2: Cross-Boundary Semantic Reasoning}
+\head{Example 2: Cross-boundary semantics and contract freedom}
 The same project contains a classifier \texttt{nursing} that filters for skilled-nursing claims by facility code, then performs an anti-join against a sibling model \texttt{equipment} to exclude equipment-related claims (Figure~\ref{fig:ex-crossboundary}, left).
 The anti-join forces the engine to materialize \texttt{equipment}, build a hash table, and probe it for every row of \texttt{claims}; it also introduces a DAG dependency that serializes the two models.
 
@@ -192,8 +275,8 @@ In practice, stable upstream models such as \texttt{equipment} change rarely, an
 %==============================================================
 % EXAMPLE 3: Frequency-Aware
 %==============================================================
-\head{Example 3: Frequency-Aware Restructuring}
-Different sources in a dbt project update at different rates, and the structure of the DAG determines how much computation must be repeated at each high-frequency refresh.
+\head{Example 3: Freshness-aware recomputation}
+Different sources in a SQL pipeline DAG update at different rates, and the structure of the DAG determines how much computation must be repeated at each high-frequency refresh.
 Consider a model that joins fast-changing transactional data with slow-changing reference data and applies expensive classification logic to the slow-changing side (Figure~\ref{fig:ex-frequency}, left).
 
 
@@ -256,14 +339,14 @@ Materialized view selection considers update cost but does not restructure the D
 \label{sec:why-different}
 
 The three examples above are not isolated curiosities; they illustrate a general capability gap.
-Single-query rewrite systems~\cite{wang2024wetune,zhou2024r,chakravarthy1990logic} operate within the boundary of one query and cannot restructure across model files.
+Single-query rewrite systems~\cite{wetune,rbot} operate within the boundary of one query and cannot restructure across model files.
 Multi-query optimization and common subexpression elimination~\cite{sellis1988multiple} share intermediate computations across queries but rely on syntactic matching, so they miss the cross-model semantic equivalence in Example~1.
 Materialized view selection~\cite{agrawal2000automated} chooses among existing view candidates and treats update cost as a static parameter rather than as a structural driver of DAG design (Example~3).
 Code clone detection and lineage tools can identify structural similarity or trace data provenance, but they do not perform the optimization itself.
 
 The gap is not that any one of these techniques is poorly designed; it is that none of them targets the setting we are concerned with.
-Optimizing a dbt project requires (1) cross-model semantic analysis, (2) DAG-aware structural rewriting that may invent or merge models, and (3) frequency-aware reasoning that ties structural decisions to update rates.
-The remainder of this paper presents an approach that integrates these three capabilities into a coherent optimization framework.
+Optimizing a SQL pipeline DAG requires an optimizer that can combine the six capabilities above: read semantics across node boundaries, exploit freedom over internal contracts, find semantic reuse beyond syntactic overlap, evaluate rewrites together with materialization choices, account for recurring refresh behavior, and compose interacting rewrites globally.
+The remainder of this paper presents an approach that integrates these capabilities into a coherent optimization framework.
 
 
 

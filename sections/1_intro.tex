@@ -1,116 +1,31 @@
+% !TEX root = ../VLDB-2026-DAGSmith-Dependency-Aware-Rewriting-for-dbt-Style-SQL-Pipelines.tex
 \section{Introduction}\label{sec:intro}
 
-intro
+\introhead{Trend}
+Modern analytics is shifting from human-written, isolated SQL queries to large, continuously maintained SQL programs. Data teams are asked to serve more stakeholders, combine more sources, support AI-facing datasets, and expose governed data products faster; at the same time, BI tools, analytics engineering frameworks, and code-generation assistants increasingly generate or maintain SQL on behalf of users. dbt Labs reports that 70\% of analytics professionals already use AI for code development, 57\% still spend most workdays maintaining or organizing datasets, and nearly 65\% believe enabling nontechnical users to create transformed and governed datasets would improve organizational efficiency~\cite{dbt2025state}. The consequence is an efficiency gap: organizations and automated tools produce increasingly large, repetitive, and semantically rich SQL pipelines, while database optimizers still see mostly one submitted statement at a time.
 
+\introhead{Query rewriting}
+Query rewriting has become an important way to close this gap. Rule-based, synthesis-based, and LLM-assisted rewriters such as \emph{SlabCity}~\cite{slabcity}, \emph{GenRewrite}~\cite{genrewrite}, \emph{WeTune}~\cite{wetune}, and \emph{R-Bot}~\cite{rbot} improve SQL before it reaches the database optimizer. However, these systems inherit the same unit of optimization as the optimizer: one query. They cannot generally ask why a relation is being computed, which later outputs depend on it, whether sibling computations are semantically redundant, or whether expensive work is being refreshed more often than its inputs change.
 
+\introhead{Explicit pipeline structure}
+At the same time, modern analytics pipelines increasingly make dependencies explicit. Analytics engineers now write and maintain transformation programs in which one SQL-defined asset consumes another, producing a source-level graph of recurring computation.\footnote{Examples include dbt~\cite{dbtLineage}, SQLMesh~\cite{sqlmeshOverview}, Dagster~\cite{dagsterAssets}, Airflow~\cite{airflowDags}, Prefect~\cite{prefectTasks}, Argo Workflows~\cite{argoDag}, Databricks Workflows~\cite{databricksJobs}, and medallion lakehouse pipelines~\cite{databricksMedallion}.} We view these as instances of a \emph{SQL pipeline DAG}: a recurring directed acyclic graph whose nodes are SQL transformations or materialized relational assets, and whose edges are data dependencies. Figure~\ref{fig:intro-example} shows the kind of structure such a DAG exposes: dependencies, intermediate boundaries, refresh cadences, and downstream consumers are visible at the source level rather than hidden inside a single query.
 
-% ============================================================
-% Introductory motivating example, DAG-centric.
-% Two DAG sketches (before/after) with four numbered annotations.
-% ============================================================
+\introhead{Limitation of existing approaches}
+Existing database techniques use only fragments of this information. Single-query rewriting optimizes one statement at a time. Multi-query optimization shares work across a workload, but typically treats the workload as a flat set of queries and relies on syntactic overlap~\cite{sellis1988multiple}. Materialized-view selection chooses useful persisted expressions, but does not generally rewrite the maintained pipeline around dependency structure, intermediate contracts, or refresh schedules~\cite{agrawal2000automated}. Workflow schedulers know dependencies, but usually optimize execution order, invalidation, or retry policy rather than semantic SQL. This comparison belongs early because it identifies the missing optimization object: the maintained SQL pipeline program itself.
 
-% Required packages (in main.tex):
-%   \usepackage{tikz}
-%   \usetikzlibrary{positioning, arrows.meta, fit, calc, backgrounds}
-%   \usepackage{xcolor}  % for the textcolor in source labels
+\introhead{Key insight}
+The key observation behind \tool is that dbt-style SQL pipeline DAGs expose six optimization opportunities that are unavailable to a single-query rewriter, a flat multi-query optimizer, or a materialized-view advisor. \textbf{(1) Cross-boundary semantics:} the optimizer can reason about the meaning of a node by reading related upstream, sibling, and downstream SQL definitions. \textbf{(2) Intermediate contract freedom:} internal nodes can be narrowed, split, merged, or removed as long as externally consumed outputs are preserved. \textbf{(3) Non-local semantic reuse:} logically equivalent work may appear in different branches with different syntax, names, predicates, or aggregation boundaries. \textbf{(4) Rewrite-materialization coupling:} whether a rewrite helps depends on table/view/incremental materialization choices, and those choices depend on the rewritten graph. \textbf{(5) Freshness-aware recomputation:} in cloud warehouses, cost and latency depend on how often sources change, how often outputs are consumed, and which nodes lie on critical refresh paths. \textbf{(6) Global rewrite composition:} DAG-level rewrites can overlap or interact, so locally beneficial changes must be selected as a compatible set.
 
-\usetikzlibrary{positioning, arrows.meta, fit, calc, backgrounds}
+\introhead{System overview}
+\tool exploits these opportunities with a dependency-aware rewriting pipeline. It identifies promising regions of the SQL pipeline DAG, asks an LLM to propose graph-level refactorings, filters unsafe or counterproductive proposals, verifies adopted rewrites with warehouse-backed diagnostics, evaluates each candidate under an optimized materialization configuration, and selects a non-conflicting set of rewrites globally. The result is a rewritten pipeline that remains executable by the same warehouse and orchestration framework, but exposes less redundant work and better aligns computation with materialization and refresh behavior.
 
-\begin{figure*}[t]
-\centering
+\introhead{Contributions}
+This paper makes the following contributions:
+\begin{itemize}[leftmargin=*, topsep=2pt, itemsep=1pt]
+    \item We introduce, to the best of our knowledge, the first holistic source-to-source query rewriting framework for dbt-style SQL pipeline DAGs: recurring SQL transformation pipelines with explicit dependencies, intermediate node contracts, materialization choices, and refresh constraints.
+    \item We identify six optimization opportunities enabled by explicit pipeline dependencies: cross-boundary semantics, intermediate contract freedom, non-local semantic reuse, rewrite-materialization coupling, freshness-aware recomputation, and global rewrite composition.
+    \item We present \tool, which combines structural graph analysis, LLM-guided refactoring, empirical equivalence checking, learned cost modeling, materialization tuning, frequency-aware scheduling, and global candidate selection.
+    \item Our evaluation will show that \tool reduces end-to-end warehouse cost by \textbf{XX\%} over the original pipeline, by \textbf{YY\%} over materialization-only tuning, and by \textbf{ZZ\%} over single-query rewriting baselines, while improving sink refresh latency by \textbf{LL\%}. These placeholders will be replaced with final measurements in Section~\ref{sec:eval}.
+\end{itemize}
 
-\begin{tikzpicture}[
-  font=\small,
-  node distance=5mm and 7mm,
-  src/.style={draw, rounded corners=2pt, fill=gray!12,
-              minimum width=14mm, minimum height=8mm,
-              align=center, font=\scriptsize},
-  model/.style={draw, rounded corners=2pt, fill=white,
-                minimum width=20mm, minimum height=6mm,
-                align=center, font=\scriptsize},
-  newmodel/.style={draw, rounded corners=2pt, fill=blue!8, thick,
-                   minimum width=20mm, minimum height=6mm,
-                   align=center, font=\scriptsize},
-  freq/.style={font=\scriptsize\itshape, color=red!60!black},
-  edge/.style={-{Stealth[length=1.5mm]}, thin, gray!70!black},
-  annot/.style={font=\scriptsize\bfseries, color=blue!50!black,
-                draw=blue!50!black, circle, inner sep=0pt,
-                minimum size=3.5mm, fill=blue!8},
-]
-
-% ------------------- BEFORE DAG (left half) -------------------
-\node[font=\bfseries\small] (beforehdr) at (0,0) {Before};
-
-\node[src, below=3mm of beforehdr.south west, anchor=north west] (orders0)
-  {orders\\\textcolor{red!60!black}{\itshape hourly}};
-\node[src, below=3mm of orders0] (catalog0)
-  {catalog\\\textcolor{red!60!black}{\itshape weekly}};
-
-\node[model, right=18mm of $(orders0)!0.5!(catalog0)$] (enr0) {orders\_enriched};
-\node[model, above right=2mm and 8mm of enr0] (rev0) {revenue\_by\_tier};
-\node[model, below right=2mm and 8mm of enr0] (top0) {top\_products};
-
-\draw[edge] (orders0) -- (enr0);
-\draw[edge] (catalog0) -- (enr0);
-\draw[edge] (enr0) -- (rev0);
-\draw[edge] (enr0) -- (top0);
-
-% Callout: expensive CASE inside enr (motivates the moves)
-\node[font=\scriptsize\itshape, color=red!50!black,
-      below=0mm of enr0, align=center]
-  {expensive\\CASE};
-
-% ------------------- AFTER DAG (right half) -------------------
-\node[font=\bfseries\small, right=72mm of beforehdr] (afterhdr) {After};
-
-\node[src, below=3mm of afterhdr.south west, anchor=north west] (orders1)
-  {orders\\\textcolor{red!60!black}{\itshape hourly}};
-\node[src, below=3mm of orders1] (catalog1)
-  {catalog\\\textcolor{red!60!black}{\itshape weekly}};
-
-% New: product_tiers between catalog and enr (move 4)
-\node[newmodel, right=6mm of catalog1] (ptiers1) {product\_tiers};
-
-\node[model, right=6mm of orders1] (enr1) {orders\_enriched};
-
-% New: tier_agg between enr and consumers (moves 1-3)
-\node[newmodel, right=4mm of enr1, yshift=-3mm] (tagg1) {tier\_agg};
-
-\node[model, above right=1mm and 4mm of tagg1] (rev1) {revenue\_by\_tier};
-\node[model, below right=1mm and 4mm of tagg1] (top1) {top\_products};
-
-\draw[edge] (orders1) -- (enr1);
-\draw[edge] (catalog1) -- (ptiers1);
-\draw[edge] (ptiers1) -- (enr1);
-\draw[edge] (enr1) -- (tagg1);
-\draw[edge] (tagg1) -- (rev1);
-\draw[edge] (tagg1) -- (top1);
-
-% --- Numbered annotations on the After DAG ---
-% (1) factor: points at tier_agg
-\node[annot] at ($(tagg1.north) + (0,2mm)$) (a1) {1};
-% (2) drop columns: points at enr
-\node[annot] at ($(enr1.north) + (0,2mm)$) (a2) {2};
-% (3) materialization: points at tier_agg's interior
-\node[annot] at ($(tagg1.south) + (0,-2mm)$) (a3) {3};
-% (4) frequency split: points at product_tiers
-\node[annot] at ($(ptiers1.north) + (0,2mm)$) (a4) {4};
-
-\end{tikzpicture}
-
-\vspace{2mm}
-
-% --- Move legend below the DAGs ---
-\begin{minipage}{0.97\textwidth}
-\footnotesize
-\begin{tabular}{@{}r@{\hspace{1.5mm}}p{0.92\textwidth}@{}}
-\textbf{(1)} & \emph{Factor non-local shared work.} Both consumers group by \texttt{tier}; the optimizer extracts the shared aggregation into a new model invisible at any single SQL file. \\[0.5mm]
-\textbf{(2)} & \emph{Equivalence is required at project outputs, not at every intermediate.} The optimizer can change an intermediate model in ways that no single-query rewriter would consider safe---e.g., narrowing its schema---as long as the project's leaf outputs are preserved. \\[0.5mm]
-\textbf{(3)} & \emph{Refactoring and materialization are coupled.} The factorization in (1) is a win as a table and a wash as a view; refactoring decisions cannot be made without the materialization decision. \\[0.5mm]
-\textbf{(4)} & \emph{Frequency is itself a structural dimension.} The expensive classification depends only on weekly data but lives inside an hourly model; splitting it onto the slow cadence requires a DAG rewrite invisible to per-execution cost. \\
-\end{tabular}
-\end{minipage}
-
-\caption{An introductory walkthrough previewing the characteristics of dbt optimization addressed by \tool. The original DAG (\emph{Before}) has two sources at different update rates, an enriched intermediate, and two consumers; the whole pipeline runs hourly. \tool transforms it (\emph{After}) along four dimensions, summarized in the legend and addressed jointly in \S\ref{sec:approach}.}
-\label{fig:intro-example}
-\end{figure*}
+The rest of the paper is organized as follows. Section~\ref{sec:motivating} defines the setting and illustrates the opportunity space. Section~\ref{sec:approach} presents the design of \tool. Section~\ref{sec:eval} outlines the evaluation plan, Section~\ref{sec:related} situates the system relative to prior work, and Section~\ref{sec:conclusion} concludes.
