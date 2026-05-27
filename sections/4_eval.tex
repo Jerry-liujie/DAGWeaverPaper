@@ -1,12 +1,11 @@
-
 \section{Evaluation}
 \label{sec:eval}
 
 We evaluate \tool{} on real dbt projects, organized around three questions:
 \begin{enumerate}
-    \item How does \tool{} compare to existing baselines for SQL pipeline optimization?
-    \item Where do \tool{}'s gains come from? We decompose them along the three optimization dimensions (refactoring, materialization, and frequency), and along the dataflow-driven targeting that feeds the LLM stage.
-    \item Is the underlying machinery sound and affordable? We measure the accuracy of the cost model that drives materialization decisions, and the LLM cost of running the system end-to-end.
+    \item How does \tool{} compare to existing baselines for SQL pipeline optimization, and what classes of optimization account for the gap?
+    \item How much does each component of \tool{}'s architecture contribute to the overall gain? We ablate the three optimization dimensions (refactoring, materialization, and frequency) and the dataflow-driven targeting that feeds the LLM stage.
+    \item Is the underlying machinery sound and affordable? We measure the accuracy of the cost model that drives materialization decisions, the effectiveness of the equivalence-verification loop at catching unsafe rewrites, and the LLM cost of running the system end-to-end.
 \end{enumerate}
 
 \head{Summary of results}
@@ -78,14 +77,17 @@ We compare against three baselines spanning the design space of SQL pipeline opt
 \emph{CSE} is a cross-model common subexpression exploitation baseline patterned after Silva-Larson-Zhou~\cite{silva2012cse}, which detects subexpressions shared across a SCOPE script's stages and materializes each once, re-optimized at the query optimizer's memo. The memo step is not portable, since managed warehouses do not expose their optimizer's internal state to external tools. We adapt the approach by detecting shared subexpressions at the AST level and selecting which to materialize heuristically. CSE is the strongest available position for a syntactic, cross-model approach on a managed warehouse.
 
 
+
+
+
 \subsection{Comparison with Baselines}
 \label{sec:eval-baselines}
 
-Table~\ref{tab:overall} reports the improvement of each method over the original project on Tuva and Stripe.
+Table~\ref{tab:overall} reports the improvement of each method over the original project on Tuva and Stripe. \tool{} leads on every metric on both projects. The single-run slot column captures the cost of one DAG execution and is affected only by refactoring and materialization. The frequency-weighted slot column weights each model's per-execution cost by the rate at which the model actually needs to run, summed over the DAG; under capacity pricing this corresponds to the project's billed cost over a period. The gap between the two columns is the contribution of frequency optimization, which affects only the frequency-weighted view.
 
 \begin{table}[tb]
 \centering
-\caption{Improvement over the original project (\% reduction; higher is better). All numbers are medians of three runs on a 100-slot BigQuery reservation.}
+\caption{Improvement over the original project (\% reduction; higher is better). Medians of three runs on a 100-slot BigQuery reservation.}
 \label{tab:overall}
 \small
 \begin{tabular}{lrrrr}
@@ -109,57 +111,38 @@ CSE            & $-3.2$  & $-5.6$  & $-3.1$  & $-0.6$ \\
 \end{tabular}
 \end{table}
 
-\tool{} leads on every metric on both projects. On Tuva, single-run slot drops by 51.1\% and frequency-weighted slot by 67.7\%; the gap between the two columns is the contribution of frequency optimization, since refactoring and materialization affect both metrics while frequency optimization affects only the frequency-weighted one. The three baselines fall short for distinct reasons that the rest of this subsection makes concrete on Tuva. We then describe where \tool{}'s additional gains come from.
+Each baseline falls short for a different structural reason. We name the limit in each case, then summarize the classes of optimization that account for the gap above the strongest baseline.
 
-\head{LearnedRewrite: improvements and regressions cancel}
-LearnedRewrite applies one structural rule at scale on Tuva: it replaces \texttt{SELECT DISTINCT \ldots FROM $T_1$ JOIN $T_2$} with a join of two pre-deduplicated inputs. The rule fires on 42 \texttt{service\_category} models, which divide cleanly by join key. \texttt{service\_category\_\_home\_health\_professional} joins on the line-grain key \texttt{(claim\_id, claim\_line\_number)}: the pre-dedup \texttt{GROUP BY} is nearly free because line-grain keys are already close to unique, and shrinking the join inputs shrinks the join itself. Slot drops from 111\,s to 40\,s. \texttt{service\_category\_\_ambulance\_institutional} joins on \texttt{claim\_id} alone, which has many rows per value: the pre-dedup now requires a full \texttt{GROUP BY} of a wide table, and the resulting plan is worse than the broadcast hash join BigQuery would have chosen on the original. Slot rises from 135\,s to 211\,s. Across the 42 models, the line-grain wins and claim-grain losses nearly cancel. On the remaining ${\sim}180$ Tuva models the rule does not apply, and the per-execution slot is dominated by formatting-level differences (whitespace, identifier quoting, keyword case) that perturb BigQuery's plan cache. The headline of $-2.5$\% on single-run slot should not be over-interpreted: the project is essentially flat. The lesson is that the single rewrite rule that applies broadly on Tuva is, by construction, a wash, and rule-based per-query rewriting offers little headroom on this workload.
+\head{LearnedRewrite: rules tuned for standalone queries do not generalize to dbt models} LearnedRewrite applies equivalence-preserving rewrite rules independently to each model. On Tuva, the one rule that fires at scale converts \texttt{SELECT DISTINCT \ldots\ JOIN} into a join of two pre-deduplicated inputs. It wins on models whose join keys are nearly unique (the pre-dedup is cheap and shrinks the join) and loses on models whose join keys are coarse (the pre-dedup forces a full grouping pass of a wide table and the resulting plan is worse than what the warehouse planner would have chosen). The wins and losses cancel. On Stripe, an already-factored project, the syntactic shape that triggers the rule is largely absent and the rule barely fires. The headlines on both projects are essentially flat. Rule-based per-query rewriting has nothing left to do once a planner has handled the easy cases and cross-model structure is out of reach.
 
-\emph{Stripe.} [Placeholder.]
+\head{GenRewrite: per-model LLM reach helps where there is slack, hurts where there is not} GenRewrite finds real per-model algorithmic rewrites that a rule-based system cannot: dynamic predicate derivation through inequality joins, functional-dependency-aware splitting of wide enrichment joins, replacement of $O(n^2)$ self-joins with $O(n)$ window-function plans. On Tuva these wins account for most of its 17.7\% slot reduction. On Stripe the same approach gains far less ($+7.1\%$ slot, against $+17.7\%$ on Tuva), and a single-run reading suggests it can be net negative on a project this small. The LLM rewrites the project's largest models with column projections the planner was already applying for free, and disrupts plans the warehouse had already optimized; it has no feedback signal telling it that nothing needs to change. The lesson generalizes: an LLM rewriter operating one model at a time helps where there is algorithmic slack a planner cannot resolve and hurts where there is none.
 
-\head{GenRewrite: real per-model wins, bounded by per-model scope}
-GenRewrite, an LLM-based per-query rewriter, finds optimizations LearnedRewrite cannot. We highlight three on Tuva. On \texttt{normalized\_input\_\_eligibility} (438\,s $\to$ 47\,s, $9.3\times$), the original joins a calendar reference table (covering decades of dates) against eligibility data through an inequality on dates, which BigQuery cannot push a filter through. GenRewrite computes the actual min/max enrollment dates in a separate CTE and uses them to filter the calendar before the inequality join. On \texttt{normalized\_input\_\_medical\_claim} (755\,s $\to$ 453\,s, $1.7\times$), the original enriches every line of the medical-claim table with ${\sim}12$ lookup joins. GenRewrite recognizes that roughly half of the lookups depend only on \texttt{claim\_id}, not on \texttt{claim\_line\_number}, and splits the enrichment so that claim-level lookups are performed once per distinct claim rather than once per line. On \texttt{acute\_inpatient\_\_generate\_encounter\_id} (168\,s $\to$ 55\,s, $3.1\times$), the original uses a self-join with a row-number inequality to compute claim merge reach in $O(n^2)$ per patient; GenRewrite replaces it with three single-pass aggregations and window functions, an $O(n)$ equivalent.
+\head{CSE: syntactic matching sees duplication, not equivalence} CSE detects subexpressions shared across models at the AST level and is the only baseline with cross-model scope. It is strong where the same SQL appears in multiple places, collapsing Tuva's largest classifier family from 6{,}135\,s to 613\,s on syntactic match alone, and weak everywhere else. Models that compute the same operation over different inputs, with different join orders, filter values, and upstream references, share the work in substance but not in SQL; CSE cannot match across them. On Stripe, where a human engineer has already taken the easy syntactic wins, CSE has almost nothing to do.
 
-These are real semantic wins, none of which a syntactic rewriter could find. But every win is bounded to one model. GenRewrite cannot introduce a shared intermediate consumed by multiple models, cannot change a model's materialization, and cannot reduce the schedule of an over-scheduled model. It also has no mechanism for consistency across related models: the same encounter-merge rewrite applied successfully to \texttt{acute\_inpatient\_\_generate\_encounter\_id} above is, on the sibling \texttt{inpatient\_snf\_\_generate\_encounter\_id}, applied differently, with a worse outcome (159\,s $\to$ 355\,s). The headline 17.7\% on single-run slot is the ceiling of what per-model LLM rewriting can deliver here.
+\head{\tool{}: four patterns that the baselines structurally cannot reach} The classes of optimization that produce \tool{}'s gap above the strongest baseline fall into four recurring patterns. The first two are forms of cross-model refactoring that go beyond syntactic matching; the next two exercise dimensions outside compiled SQL altogether. Each is illustrated with one concrete instance from the workloads.
 
-\emph{Stripe.} [Placeholder.]
+\emph{(1) Semantic-equivalence factorization across dissimilar siblings.} Models that compute the same logical operation over different inputs are folded into one shared intermediate, even when their SQL has no syntactic overlap. On Tuva, six inpatient encounter-rollup models compute the same per-encounter aggregations over different encounter types; \tool{} synthesizes a single rollup that carries the encounter type as a column and replaces all six bodies with lookups against it. The family drops from 914\,s to 211\,s, where CSE recovers only 127\,s of that gap. This is the regime where syntactic AST matching cannot reach but semantic equivalence is clear once the LLM stage reads each model.
 
-\head{CSE: subexpression sharing only}
-CSE detects subexpressions shared across models at the AST level and extracts them into shared intermediates. Its single largest contribution on Tuva is the \texttt{service\_category} family, where 65 institutional/professional classifiers share enough syntactic structure that AST matching collapses the family from $6{,}135\,$s to $613\,$s. This is the regime CSE was built for. But its reach ends where AST matching stops. The 6 inpatient \texttt{*\_\_encounter\_grain} models compute the same family of per-encounter aggregations (paid/allowed/charge totals, claim counts, service-category flags, top diagnoses by paid amount) over different encounter types, with different upstream models, different filter values, and reference-table joins in different orders. The work is shared in substance but the SQL is not, and CSE's AST fingerprinting cannot match across them. CSE reduces the family by 14\% (914\,s $\to$ 787\,s) where \tool{} reduces it by 77\% (see below). On the project total, CSE reaches 34.6\% on single-run slot.
+\emph{(2) Cross-model narrowing.} When many consumers each scan a wide table to read a small subset of its columns, the projection is extracted into a narrow intermediate consumed by all of them. The pattern shows up wherever a fan-out exists: many readers, one wide source, narrow per-reader needs. On Tuva, a 14-branch union consumer reads a single column from a wide claim-line table on each branch; once \tool{} extracts the narrow projection, the consumer drops from 1{,}420\,s to 374\,s. The shared work here is column-level; per-query rewriters do not see it and AST matching does not find it because each branch references a different upstream model.
 
-\emph{Stripe.} [Placeholder.]
+\emph{(3) Materialization revision unlocks planner reach.} When a model is materialized as a table, the warehouse planner sees an opaque scan; when it is materialized as a view, the planner sees the full source SQL and can push predicates, prune columns, and reorder joins across the staging boundary. \tool{} treats materialization as an optimization variable and revises it across the project. On Stripe, flipping the staging layer of a wide reporting model from tables to views drops the model's bytes scanned by a third and its slot by a factor of 2.5, on byte-identical model SQL. The downstream savings are produced entirely by the planner, but they exist only because \tool{} changed the materialization choice; no approach that operates on compiled SQL can reach them.
 
-\head{\tool{}: closing the gap}
-\tool{} reaches 51.1\% on single-run slot, $16.5$ points above CSE, and 67.7\% on frequency-weighted slot. Three mechanisms account for the gap, each grounded in a concrete refactoring chosen by the LLM stage and validated against the warehouse.
+\emph{(4) Materialization revision tied to refactored structure.} The right materialization for the original project is not the right materialization for the refactored project. Once a refactoring changes which models read from which, the build cost of an upstream table can stop being worth paying. On Tuva, six voting and normalize stages were materialized as tables in the original project, each feeding a single downstream consumer; once \tool{} refactors the consumers, the tuner flips the upstream stages to views, and the family's slot drops by 24\%. CSE, which applies the original project's materialization choices to its rewrites, regresses on the same family. This is direct evidence that refactoring and materialization must be tuned jointly: neither pass in isolation finds the configuration that the joint pass does.
 
-\emph{Cross-model factorization across dissimilar siblings.} The 6 inpatient \texttt{*\_\_encounter\_grain} models that CSE cannot match are exactly the targets of one of \tool{}'s refactorings. The LLM stage recognizes that the 6 models compute the same per-encounter aggregations and synthesizes a single shared intermediate that pre-aggregates them once across all encounter types, with \texttt{encounter\_type} carried as a column. Each consumer is rewritten to read pre-aggregated columns from the rollup, filter by its encounter type, and join the encounter-type-specific dimension tables. The 6 consumers drop from $914\,$s to $211\,$s at a $96\,$s build cost.
+Frequency optimization is the fifth dimension and contributes the gap between the single-run and frequency-weighted columns of Table~\ref{tab:overall}: \tool{} reduces the firing rate of models whose inputs change less often than they execute, eliminating redundant runs outright. Like materialization, it is invisible to any approach that operates on compiled SQL.
 
-\emph{Cross-model column-projection pushdown.} The \texttt{combined\_claim\_line\_crosswalk} model is a 14-branch \texttt{UNION ALL}, each branch joining a different upstream model to the wide \texttt{stg\_medical\_claim} table to read a single column, \texttt{claim\_line\_number}. \tool{} extracts that column into a 21\,MB lookup table and rewrites all 14 branches to join the lookup instead. The model drops from $1{,}420\,$s to $374\,$s. CSE cannot do this because the 14 branches reference 14 different upstream models, so no AST subtree is shared across them.
-
-\emph{Materialization tuning.} In the \texttt{normalized\_input} chain, six voting and normalize stages were materialized as tables in the original project (each ${\sim}70$--$125\,$s of build cost), feeding three \texttt{\_final} consumers. \tool{}'s materialization tuner flips the six stages to views: the upstream build cost drops to zero, the consumers absorb the inlined SQL, and the family's nine-model total drops from $544\,$s to $413\,$s. CSE's version of the same family regresses to $667\,$s, because CSE has no mechanism to flip materialization choices that the original project already committed to. This is the cleanest evidence in the data that materialization choices are coupled to the surrounding structure: the right materialization for the original project is not the right materialization for the refactored one.
-
-The first two mechanisms account for the gap between single-run slot and CSE. The third partly does as well, and the further gap between single-run slot and frequency-weighted slot is contributed by the frequency layer, which reduces the schedule of over-scheduled models to the rate at which their inputs change. This third source of saving is invisible in the single-run column.
-
-\emph{Stripe.} [Placeholder.]
+Tuva and Stripe exercise these patterns in different proportions. Tuva's gap above the strongest baseline is dominated by patterns 1 and 2 (cross-model refactoring); Stripe's is dominated by pattern 3 (materialization revision). The same pipeline produces both outcomes because the optimizer chooses what to apply to the project in front of it, rather than committing to a single mechanism upfront. The next subsection quantifies the contributions component by component.
 
 
-
-
-
-
-
-
-
-
-
-\subsection{Where the Gains Come From}
+\subsection{Component Ablation}
 \label{sec:eval-attribution}
 
-This subsection attributes \tool{}'s gains along two axes. We first ablate the three optimization dimensions to measure how much each contributes individually and in combination, then ablate the dataflow analysis to measure how much it contributes by targeting the LLM stage on the highest-payoff regions of the DAG.
+Section~\ref{sec:eval-baselines} described the \emph{classes of optimization} responsible for \tool{}'s gap above the baselines. This subsection asks a different question: among \tool{}'s own architectural components, how much does each contribute, and how do they interact? We ablate along two axes: the three optimization dimensions of refactoring (R), materialization tuning (M), and frequency optimization (F); and the dataflow analysis that targets the LLM stage. The ablation is performed on Tuva alone, because Tuva is the larger and more structurally varied of the two projects and exercises all three dimensions meaningfully; Stripe is small enough that its single-run signal sits close to the run-to-run noise band, making fine-grained dimension comparisons unreliable.
 
 \subsubsection{Three Optimization Dimensions}
 \label{sec:eval-ablation-rmf}
 
-We ablate \tool{} on Tuva across the configurations spanned by refactoring (R), materialization tuning (M), and frequency optimization (F). Table~\ref{tab:ablation-rmf} reports the frequency-weighted improvement of each variant over the original.
+Table~\ref{tab:ablation-rmf} reports the improvement of each subset of $\{R, M, F\}$ over the original Tuva project.
 
 \begin{table}[tb]
 \centering
@@ -172,123 +155,55 @@ Variant & Elapsed & Slot \\
 \midrule
 original         & --              & --              \\
 F only           & $13.2$          & $11.0$          \\
-M only           & \textcolor{red}{TBD} & $53.9$     \\
+M only           & $34.7$          & $37.0$          \\
 R only           & $40.0$          & $49.1$          \\
+M + F            & $31.0$          & $54.0$          \\
 R + M            & $43.1$          & $54.7$          \\
 R + M + F (full) & $\mathbf{42.6}$ & $\mathbf{67.7}$ \\
 \bottomrule
 \end{tabular}
 \end{table}
 
-Three observations follow.
+The numerics admit four observations, each one reflecting a property of how the dimensions are designed to interact.
 
-\emph{Each dimension contributes independently.} Materialization tuning alone improves slot by 53.9\%, refactoring alone by 49.1\%, and frequency alone by 11.0\%. The original project is therefore sub-optimal along all three axes, not just one.
+\head{Slot reductions exceed elapsed reductions across every variant} Slot measures the total CPU-time the project consumes; elapsed measures the wall-clock time from first model to last. \tool{} removes work parallel to the critical path more aggressively than work on the critical path itself: a refactoring that consolidates many independent sibling models into one shared intermediate saves slot proportional to the number of siblings but saves elapsed only the slowest sibling's share. The slot-vs-elapsed gap is largest for R-only (49.1\% vs 40.0\%), where this effect is most direct, and remains visible across the rest of the table.
 
-\emph{The dimensions are coupled.} R + M reaches 54.7\% slot, which exceeds both M alone (53.9\%) and R alone (49.1\%); the refactored DAG admits a different optimal materialization than the original DAG, and tuning the materialization for the refactored structure recovers additional savings that neither stage delivers in isolation. This matches the structural argument in Section~\ref{sec:approach} that refactoring and materialization decisions must be made jointly.
+\head{R-only is closer to R+M than the headline suggests, because R is not pure refactoring} When \tool{}'s refactoring stage introduces a new model, it also assigns that model an optimal materialization as part of producing the candidate (\S\ref{sec:materialization-tuning}). The R-only variant therefore already tunes the materialization of newly created models; what M adds on top is project-wide retuning of pre-existing models, which is a smaller marginal change. The gap between R-only (49.1\%) and R+M (54.7\%) is correspondingly modest. M-only (37.0\%) is lower than R-only because it cannot create models at all, so it can only revise materialization on the original DAG.
 
-\emph{Frequency optimization is complementary to refactoring and materialization.} F alone delivers 11.0\% on slot; stacking F on top of R+M adds 13.0 points (67.7\% vs 54.7\%). The increment F contributes does not collapse when stacked on top of the other dimensions; over-scheduled models are over-scheduled regardless of how their code is refactored or how they are materialized.
+\emph{Refactoring and materialization are coupled.} R+M (54.7\%) exceeds the larger of the two singletons (R: 49.1\%) by 5.6 points. The refactored DAG admits a different optimal materialization than the original DAG, and the joint pass finds savings that neither stage produces in isolation. The Section~\ref{sec:eval-baselines} argument that refactoring and materialization decisions must be made jointly is made concrete here: pattern 4 of Section~\ref{sec:eval-baselines} contributes to R+M but not to R or M alone.
+
+\head{Frequency's increment depends on what came before it} F alone delivers 11.0\%; F adds 17.0 points on top of M ($54.0$ vs $37.0$); F adds 13.0 points on top of R+M ($67.7$ vs $54.7$). F's reach is bounded by the over-scheduled work present in the project, and that pool itself depends on the prior dimensions. Refactoring can change which models are over-scheduled (a refactoring that splits a fast-cadence model into a slow rollup and a fast lookup moves work onto the appropriate cadence and removes it from F's surface), while materialization tuning leaves the over-schedule pool largely intact. F therefore has more to remove on top of M than on top of R+M. The non-collapsing increment confirms that F is structurally orthogonal to R and M and not a redundant pass; the size of the increment confirms that the three dimensions interact in non-trivial ways.
 
 \subsubsection{Dataflow Analysis}
 \label{sec:eval-ablation-dataflow}
 
-\textcolor{red}{[PLACEHOLDER] To isolate the contribution of the structural analyses in Section~\ref{sec:candidate-identification}, we compare \tool{} against a variant that bypasses dataflow-based candidate selection and instead passes every model group (or a randomly sampled set of groups) to the LLM refactoring stage. The comparison is on Tuva and measures final frequency-weighted slot improvement and total LLM tokens consumed. Numbers TBD.}
+\textcolor{red}{[PLACEHOLDER] To isolate the contribution of the structural analyses in Section~\ref{sec:candidate-identification}, we compare \tool{} against a variant that bypasses dataflow-based candidate selection and passes every model group (or a randomly sampled set) to the LLM refactoring stage. The comparison is on Tuva and measures final frequency-weighted slot improvement and total LLM tokens consumed. Numbers TBD.}
+
+
+
+
+
+
+
+
+
 
 \subsection{System Characterization}
 \label{sec:eval-system}
 
-This subsection asks whether the machinery that produces the gains above is itself sound and affordable. We measure the accuracy of the cost model that drives materialization tuning and refactoring selection, and the LLM cost of running \tool{} end-to-end on each project.
+This subsection asks whether the machinery that produces the gains above is itself sound and affordable. We measure the accuracy of the cost model that drives materialization and refactoring decisions, the effectiveness of the equivalence-verification loop at catching unsafe rewrites, and the LLM cost of running \tool{} end-to-end.
 
 \subsubsection{Cost Model Accuracy}
 \label{sec:eval-cost-model}
 
 \textcolor{red}{[PLACEHOLDER] To be filled in. Reports the accuracy of the Huber-regression cardinality and slot-time predictors against measured values on the original and refactored projects.}
 
+\subsubsection{Equivalence-Verification Effectiveness}
+\label{sec:eval-verification}
+
+\textcolor{red}{[PLACEHOLDER] Reports how the equivalence-verification loop behaves on the refactoring candidates produced for Tuva and Stripe: the number of candidates that pass on the first attempt, the number that require one or more revision rounds, and the number rejected outright. For candidates the loop rejects or revises, we characterize the kinds of unsafe transformations caught (e.g., the secondary-tag drop illustrated in Figure~\ref{fig:critic-trap}). The end-to-end question is whether the loop is conservative enough to be trusted as the project's safety net, while not so conservative that real refactorings are discarded.}
+
 \subsubsection{LLM Cost}
 \label{sec:eval-llm-cost}
 
 \textcolor{red}{[PLACEHOLDER] Reports total LLM tokens consumed and dollar cost of running \tool{} end-to-end on Tuva and on Stripe, broken down by stage (subgraph analysis and opportunity proposal, proposal filtering, refactoring, equivalence verification, family propagation). Numbers TBD.}
-
-
-
-
-\begin{comment}
-    
-
-
-\subsection{Comparison with Baselines}
-\label{sec:eval-baselines}
-
-Table~\ref{tab:overall} reports the improvement of each method over the original project on Tuva and Stripe.
-
-\begin{table}[tb]
-\centering
-\caption{Improvement over the original project (\% reduction; higher is better). All numbers are medians of three runs on a 100-slot BigQuery reservation.}
-\label{tab:overall}
-\small
-\begin{tabular}{lrrrr}
-\toprule
-& \multicolumn{2}{c}{Single-run} & \multicolumn{2}{c}{Freq-weighted} \\
-\cmidrule(lr){2-3} \cmidrule(lr){4-5}
-& Elapsed & Slot & Elapsed & Slot \\
-\midrule
-\multicolumn{5}{l}{\emph{Tuva (255 models)}} \\
-LearnedRewrite & $-19.6$ & $-2.5$ & $-20.2$ & $-3.0$ \\
-GenRewrite     & $9.7$   & $17.7$ & $21.5$  & $15.1$ \\
-CSE            & $12.2$  & $34.6$ & $27.7$  & $37.9$ \\
-\tool{}        & $\mathbf{30.9}$ & $\mathbf{51.1}$ & $\mathbf{42.6}$ & $\mathbf{67.7}$ \\
-\midrule
-\multicolumn{5}{l}{\emph{Stripe (65 models)}} \\
-LearnedRewrite & $2.6$   & $2.7$   & $-0.5$  & $4.5$  \\
-GenRewrite     & $7.6$   & $7.1$   & $1.1$   & $9.3$  \\
-CSE            & $-3.2$  & $-5.6$  & $-3.1$  & $-0.6$ \\
-\tool{}        & $\mathbf{40.0}$ & $\mathbf{47.4}$ & $\mathbf{36.1}$ & $\mathbf{54.8}$ \\
-\bottomrule
-\end{tabular}
-\end{table}
-
-\tool{} leads on every metric on both projects. On Tuva it reduces frequency-weighted slot by 67.7\%, almost 30 points beyond the strongest baseline. The three baselines fail in distinct ways, each consistent with a specific limitation of the technique. We walk through each on Tuva, then explain where \tool{}'s additional gains come from.
-
-\head{LearnedRewrite: the headroom from per-query rewriting is small}
-LearnedRewrite applies a portfolio of equivalence-preserving rules to each model's compiled SQL independently. On Tuva it nets $-2.5$\% slot. Inspection of the rewritten SQL shows that the one structural rule applied at scale converts \texttt{SELECT DISTINCT \ldots\ FROM $T_1$ JOIN $T_2$} into a join of two pre-deduplicated inputs. The rule is a win on models where the pre-dedup shrinks the join input enough to pay back its overhead, and a loss on models where BigQuery's planner would otherwise eliminate the join. The wins and losses roughly cancel. The lesson is not that LearnedRewrite is poorly designed but that per-query rule-based rewriting has little headroom on a project like Tuva: BigQuery's planner already handles most models well, and rules tuned for standalone analytical queries cannot exploit the cross-model structure that drives the remaining cost.
-
-\head{GenRewrite: real per-model wins, but bounded by the per-model scope}
-GenRewrite is an LLM-based per-query rewriter with verification, and it finds optimizations the rule-based baseline does not: per-model algorithmic rewrites such as predicate pushdown over inequality joins, functional-dependency-aware splitting of wide enrichment joins, and replacement of $O(n^2)$ self-joins with $O(n)$ window-function plans. These yield single-model speedups of $2$--$9\times$ where they apply. But GenRewrite operates one model at a time: it cannot introduce a shared intermediate that did not exist, change a model's materialization, or reduce the schedule of an over-scheduled model. Its 17.7\% Tuva slot reduction is the ceiling of what a per-model LLM rewriter can reach without crossing model boundaries.
-
-\head{CSE: syntactic duplication only}
-CSE detects subexpressions shared across models at the AST level and extracts them into shared intermediates. On Tuva it reduces slot by 34.6\%, the strongest baseline. Its largest contribution is the \texttt{service\_category} family, where 65 institutional/professional classifiers share enough syntactic structure that AST matching collapses the family from 6{,}135\,s to 613\,s. But CSE's reach ends where the AST stops matching. The \texttt{*\_\_encounter\_grain} family contains 25 models that compute the same family of per-encounter aggregations (paid/allowed/charge totals, service-category flags, top-by-paid-amount diagnoses and facilities) but over different encounter types, with different filter predicates and different join structures. The SQL is too syntactically dissimilar for AST fingerprinting to match across them, and CSE reduces the family's cost by only $9$\% ($5{,}056\,$s to $4{,}589\,$s). The same pattern explains CSE's negative result on Stripe: the project is already factored, so the duplicate subtrees that remain are small, and writing a new shared intermediate and scanning it from consumers costs more than the work it saves.
-
-\head{Where \tool{}'s additional gains come from}
-\tool{} closes the 30-point gap above CSE by exercising three mechanisms that a syntactic, single-dimension optimizer cannot.
-
-\emph{Cross-model semantic factorization.} The 7 inpatient \texttt{*\_\_encounter\_grain} models that CSE refuses to merge are precisely the cases the LLM stage recognizes as semantically equivalent computations over different inputs. \tool{} synthesizes a shared rollup model that pre-aggregates the per-encounter measures once over the medical-claim source, and rewrites each consumer from a ${\sim}200$-line query into a ${\sim}70$-line lookup that joins the rollup against the encounter-type-specific dimension table. The 7 consumers drop from a combined $1{,}075\,$s to $309\,$s at a $96\,$s rollup-build cost. A second factorization addresses the \texttt{combined\_claim\_line\_crosswalk} model, whose 14-branch \texttt{UNION ALL} scans the wide \texttt{stg\_medical\_claim} table once per branch to read a single column; \tool{} extracts the narrow projection into a new map model, and the consumer drops from $1{,}420\,$s to $374\,$s. Neither factorization is reachable by AST matching: the consumers do not share syntax, and the new intermediates have no syntactic precedent in the original project.
-
-\emph{Refactoring/materialization coupling.} Six models in the \texttt{normalized\_input} voting/normalize chain were materialized as tables in the original project. After \tool{} refactors their consumers, the materialization tuner flips them to views: the upstream tables are no longer worth their build cost given the new consumer structure, and inlining them is cheaper overall. The upstream cost drops by ${\sim}600\,$s; the downstream \texttt{\_final} consumers absorb ${\sim}360\,$s of additional work; the family nets ${\sim}240\,$s saved. CSE materializes everything, and its version of this family regresses by 22\%. The difference is direct evidence that materialization decisions depend on the refactored structure, not the original one, and that tuning them jointly is necessary to capture the saving.
-
-\emph{Frequency-aware scheduling.} Independent of any structural change, models whose declared schedule fires faster than their inputs change are over-scheduled. \tool{}'s frequency layer detects these and reduces their schedules to match the rate at which their data actually changes, eliminating redundant executions outright. This mechanism is invisible at the single-run slot metric but contributes the remaining gap to the frequency-weighted column.
-
-In aggregate on Tuva, \tool{} introduces 14 new shared models costing $514\,$s in build time and recovers $9{,}092\,$s on the consumers they serve. CSE introduces 1 new model. The contrast in investment reflects the contrast in scope: a syntactic baseline can only commit to new intermediates it can prove duplicated at the AST level, while the LLM-driven candidate generator commits to intermediates justified by semantic equivalence and validated against the warehouse.
-
-\end{comment}
-
-
-
-\begin{comment}
-
-\section{Evaluation Plan}
-\label{sec:eval}
-
-This draft currently focuses on problem formulation and system design. The final version should evaluate \tool along four questions: whether it reduces end-to-end warehouse cost, which classes of dependency-aware refactorings account for the gains, how often the verification loop rejects unsafe rewrites, and how the benefits vary with workload frequency skew and DAG size.
-
-\subsection{Workloads and Baselines}
-
-The evaluation should include at least one real dbt project, one SQLMesh- or warehouse-task-style pipeline when available, and semi-synthetic benchmarks derived from recurring analytics pipelines. Natural baselines include the original DAG, materialization-only tuning, schedule-only tuning, structural analyses without LLM refactoring, and single-query rewrite systems that do not cross node boundaries.
-
-\subsection{Metrics}
-
-Primary metrics should include total slot time or warehouse cost over a fixed horizon, refresh latency at the DAG sinks, the number of nodes changed, and verification pass rate. Secondary diagnostics should measure optimizer runtime, LLM usage, and the distribution of wins across semantic reuse, contract-aware rewriting, computation placement, materialization coupling, and freshness-driven restructuring.
-
-\subsection{Ablations}
-
-The final paper should isolate the contribution of each layer: candidate identification, proposal filtering, equivalence diagnostics, materialization tuning, and frequency-aware reasoning. A particularly important ablation is whether frequency-aware splitting produces gains that materialization-only optimization cannot recover.
-
-\end{comment}
