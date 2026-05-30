@@ -2,7 +2,7 @@
 \section{Opportunities in SQL Pipeline DAGs}
 \label{sec:motivating}
 
-Before presenting our approach, we describe the optimization setting that \tool targets and illustrate, through three examples drawn from or inspired by real-world analytics pipelines, the kinds of dependency-aware optimizations that this setting enables but that fall outside the reach of existing techniques.
+Before presenting our approach, we define the optimization setting that \tool targets and illustrate, through three examples drawn from or inspired by real-world analytics pipelines, the kinds of dependency-aware optimizations that this setting enables but that fall outside the reach of existing techniques.
 
 \begin{figure*}[t]
 \centering
@@ -68,76 +68,79 @@ Before presenting our approach, we describe the optimization setting that \tool 
 \begin{minipage}{0.97\textwidth}
 \footnotesize
 \begin{tabular}{@{}r@{\hspace{1.5mm}}p{0.92\textwidth}@{}}
-\textbf{(1)} & \emph{Cross-boundary semantics.} The optimizer can interpret a node by reading the SQL definitions around it, not just the node's own query text. \\[0.5mm]
-\textbf{(2)} & \emph{Intermediate contract freedom.} The optimizer can narrow, split, merge, or remove internal nodes as long as externally visible outputs are preserved. \\[0.5mm]
-\textbf{(3)} & \emph{Rewrite-materialization coupling.} A shared intermediate is useful only under the right materialization choice; graph rewriting and physicalization must be optimized together. \\[0.5mm]
-\textbf{(4)} & \emph{Freshness-aware recomputation.} The expensive classification depends only on weekly data but lives inside an hourly model; splitting it onto the slow cadence requires a DAG rewrite invisible to per-query cost. \\
+\textbf{(1)} & \emph{Cross-boundary rewriting.} Producer-consumer edges identify SQL boundaries that can be replaced, bypassed, or shifted when an equivalent relationship exists across the boundary. \\[0.5mm]
+\textbf{(2)} & \emph{Non-local semantic reuse.} Similar logic in separate parts of the graph can be factored into a shared computation even when the SQL text differs. \\[0.5mm]
+\textbf{(3)} & \emph{Rewrite-materialization co-optimization.} A shared intermediate is useful only under the right persistence choice; rewriting and persistence must be optimized together. \\[0.5mm]
+\textbf{(4)} & \emph{Frequency-aware optimization.} The expensive classification depends only on weekly data but is recomputed inside an hourly transformation; splitting it onto the slow cadence requires a pipeline rewrite invisible to per-query cost. \\
 \end{tabular}
 \end{minipage}
 
-\caption{A compact example of the optimization opportunities exposed by an explicit SQL pipeline DAG. Once dependencies are visible, the optimizer can reason across node boundaries, rewrite internal contracts, couple refactoring with materialization, and split slow-changing logic off fast refresh paths.}
+\caption{A compact example of optimization opportunities exposed by an explicit SQL pipeline DAG. Once dependencies are visible, the optimizer can rewrite across transformation boundaries, factor repeated logic, co-optimize rewriting with persistence, and split slow-changing logic off fast refresh paths.}
 \label{fig:intro-example}
 \end{figure*}
 
 \subsection{Setting}
 \label{sec:dbt-setting}
 
-A \emph{SQL pipeline DAG} is a directed acyclic graph \(G=(V,E)\) in which each node is a relational transformation or a persisted relational asset, and each edge records that one node consumes the output of another. A node may be implemented as a SQL model, a notebook cell that issues SQL, a warehouse task, or a materialized table maintained by an orchestration framework. The graph may be declared directly, as in Airflow~\cite{airflowDags} and Argo~\cite{argoDag}, inferred from dataflow, as in Prefect~\cite{prefectTasks}, or induced by model references, as in dbt~\cite{dbtLineage} and SQLMesh~\cite{sqlmeshOverview}. In asset-oriented systems such as Dagster~\cite{dagsterAssets}, the same idea appears as an asset graph: nodes are persistent assets and edges describe how one asset is derived from another.
+A \emph{SQL pipeline DAG} is a directed acyclic graph \(G=(V,E)\) whose nodes are SQL transformations or SQL-produced tables/views, and whose edges record that one node reads another node's output. We use ``DAG'' in the standard sense: the dependency graph is directed, and cycles are disallowed so the transformations can be evaluated in dependency order. A node may be implemented as a dbt \emph{model} (dbt's term for a SQL transformation that produces a table or view), a notebook cell that issues SQL, a warehouse task, or a table produced by an orchestration framework. The graph may be declared directly, as in Airflow~\cite{airflowDags} and Argo~\cite{argoDag}, inferred from dataflow, as in Prefect~\cite{prefectTasks}, or induced by model references, as in dbt~\cite{dbtLineage} and SQLMesh~\cite{sqlmeshOverview}. In asset-oriented systems such as Dagster~\cite{dagsterAssets}, the same idea appears as an asset graph: nodes are persistent data assets and edges describe how one asset is derived from another.
 
-dbt is the running example in this paper because its SQL model boundaries and \texttt{ref()} dependencies make the setting especially explicit. However, the optimization problem is broader. Databricks Workflows~\cite{databricksJobs} and Lakeflow Jobs~\cite{databricksJobs} expose task dependencies as a job DAG; Databricks' medallion architecture~\cite{databricksMedallion} encourages multi-hop transformations from bronze to silver to gold tables; Luigi~\cite{luigiDocs} and the systems above all represent recurring data work through dependency graphs. \tool targets the subset of these pipelines where the node logic is available as SQL, or can be compiled to SQL, so that the optimizer can reason about relational semantics rather than only task ordering.
+dbt is the running example in this paper because its SQL transformation boundaries and dependency declarations make the setting especially explicit. However, the optimization problem is broader. Databricks Workflows~\cite{databricksJobs} and Lakeflow Jobs~\cite{databricksJobs} expose task dependencies as a job DAG; Databricks' medallion architecture~\cite{databricksMedallion} encourages multi-hop transformations from bronze to silver to gold tables; Luigi~\cite{luigiDocs} and the systems above all represent recurring data work through dependency graphs. \tool targets the subset of these pipelines where the node logic is available as SQL, or can be compiled to SQL, so that the optimizer can reason about relational semantics rather than only task ordering.
 
 This setting differs from traditional query optimization in six ways that matter for our problem. Figure~\ref{fig:intro-example} previews several of the changes these differences make possible.
 
-\head{\textbf{(1) Cross-boundary semantics}}
-The optimizer can interpret a node by reading the SQL definitions around it. Parent, sibling, and downstream nodes often explain why a relation exists, which columns matter, and whether a dependency is semantically necessary. This is stronger than expanding a view inside one query: the optimizer reasons over maintained source definitions and their relationships, not just over a single compiled statement.
+\head{\textbf{(1) Cross-boundary rewriting}}
+The graph identifies explicit boundaries between SQL transformations: which output is produced at one node, which later nodes read it, and which final outputs must remain unchanged. These boundaries are optimization choices, not just execution constraints. A dependency-aware optimizer can therefore bypass an intermediate node, inline part of a producer, pull a predicate from a consumer into a producer, or replace a dependency on one node with an equivalent expression over another node, as long as the final pipeline outputs are preserved. This is stronger than expanding a view inside one query: the optimizer can change how SQL is divided across transformations, not merely optimize the compiled text of one statement.
 
-\head{\textbf{(2) Intermediate contract freedom}}
-Not every node in the DAG has the same semantic status. Sinks consumed by dashboards, downstream pipelines, applications, or ML features are externally visible contracts. Many intermediate nodes are implementation details. A dependency-aware optimizer can therefore preserve the outputs that matter while changing intermediate schemas, boundaries, and materializations. A single-query rewriter normally cannot make this distinction because the query boundary itself is the contract.
+\head{\textbf{(2) Non-local semantic reuse}}
+The graph exposes similar business logic that appears in different parts of the pipeline, often under different names or SQL structure. A dependency-aware optimizer can factor repeated work into a shared computation and rewrite consumers to use that shared result. This is not limited to syntactic common subexpressions: two transformations may compute the same logical quantity using different predicates, aliases, joins, or intermediate names.
 
-\head{\textbf{(3) Non-local semantic reuse}}
-The DAG is a maintained software artifact. Teams version it, review it, test it, document it, and execute it repeatedly. This stability makes source-to-source optimization worthwhile: expensive analysis can be amortized over many recurring executions, and semantically redundant work can be found across distant branches rather than only inside one query text. This is especially relevant as projects grow. dbt Labs notes that what counted as a large project has grown from roughly 150 models to 500, then 1,000, and that an appreciable fraction of users now work in projects with 5,000 models or more~\cite{dbtComplexity}. dbt's own internal analytics project reportedly processes roughly 1,500 models across multiple jobs and schedules~\cite{dbtComputeReduction}.
+\head{\textbf{(3) Downstream-aware pruning}}
+Downstream transformations reveal which columns, joins, or intermediate results are never consumed by any final output. A dependency-aware optimizer can remove such work safely because the graph proves that no later transformation depends on it. A one-query rewriter can remove locally dead expressions inside one statement, but it cannot know whether an intermediate result produced for the pipeline is actually read later.
 
-\head{\textbf{(4) Rewrite-materialization coupling}}
-Whether a node should be a table, view, incremental model, or ephemeral expression depends on its parents, descendants, fanout, refresh behavior, and the refactorings under consideration. A shared intermediate may be valuable as a table and harmful as a view; a narrow projection may make an upstream table unnecessary; merging two nodes may reduce writes but increase downstream recomputation. Materialization is therefore not a local property of one model.
+\head{\textbf{(4) Pipeline-aware work placement}}
+The graph shows where expensive operations occur relative to filters, projections, aggregations, and joins. A dependency-aware optimizer can move expensive work after data-reducing steps as long as final outputs are not impacted. This opportunity is pipeline-level because the data-reducing step and the expensive operation may be separated across transformation boundaries.
 
-\head{\textbf{(5) Freshness-aware recomputation}}
-Different sources update at different rates, and different downstream consumers require fresh results at different rates. A model's useful execution frequency is shaped by both upstream data-change rates and downstream demand. In cloud warehouses, these rates translate directly into cost and latency objectives: if a weekly source feeds an hourly model, any computation that depends only on the weekly source is being repeated unnecessarily; if an output is consumed daily, hourly refresh may be waste even when the query itself is individually optimized.
+\head{\textbf{(5) Rewrite-materialization co-optimization}}
+The graph shows which rewritten results would be reused and where recomputation would occur if they are not persisted. A dependency-aware optimizer can choose rewrites and persistence choices together, since a rewrite can create new persistence opportunities and persistence can determine whether a rewrite helps. For example, a shared transformation may reduce cost when written once as a table but increase cost when inlined as a view under several consumers.
 
-\head{\textbf{(6) Global rewrite composition}}
-DAG-level rewrites interact. Two local changes may touch the same node, make incompatible assumptions about an intermediate contract, or change the materialization choice that makes another rewrite profitable. A dependency-aware optimizer therefore needs a global composition step that selects a compatible set of rewrites rather than greedily applying every local improvement.
+\head{\textbf{(6) Frequency-aware optimization}}
+Schedules and source update rates reveal how often inputs change and outputs are consumed. A dependency-aware optimizer can align computation frequency with input-change rates and output-consumption rates, avoiding refreshes that do not impact consumers. In cloud warehouses, these rates translate directly into cost and latency objectives: if a weekly source feeds an hourly transformation, any computation that depends only on the weekly source is being repeated unnecessarily; if an output is consumed daily, hourly refresh may be waste even when the SQL statement itself is individually optimized.
 
-Together, these properties define a distinct optimization setting. The optimizer is reasoning not about one query, nor merely about a set of independent queries, but about a stable SQL pipeline program whose graph structure, intermediate contracts, materialization choices, and refresh behavior interact.
+Together, these properties define a distinct optimization setting. The optimizer is reasoning not about one query, nor merely about an unordered set of independent queries, but about a recurring SQL pipeline program whose graph structure, final outputs, persistence choices, and refresh behavior interact.
 
 \subsection{Opportunity Taxonomy}
 \label{sec:motivating-examples}
 
 The properties above create a broader opportunity space than the three examples in this section can cover exhaustively. We organize the space into six recurring classes that map directly to the components of \tool in Section~\ref{sec:approach}.
 
-\head{Cross-boundary semantics}
-The optimizer can read related node definitions to discover semantic facts that are not present in the current SQL file. This enables rewrites such as replacing a dependency on a sibling node with an equivalent predicate over a shared parent.
-
-\head{Intermediate contract freedom}
-Intermediate models often exist for developer organization rather than as externally visible contracts. If the final outputs are preserved, the optimizer may narrow schemas, remove unused columns, change intermediate grouping levels, or replace an intermediate with a cheaper equivalent.
+\head{Cross-boundary rewriting}
+Producer-consumer edges expose transformation boundaries that may be bypassed, shifted, or replaced. The optimization opportunity is to replace a cross-node dependency with a cheaper equivalent relationship while preserving the final outputs of the pipeline.
 
 \head{Non-local semantic reuse}
-Multiple branches may compute the same logical quantity using different syntax, predicates, joins, or naming conventions. The opportunity is to factor the shared computation into a new model or asset, then rewrite consumers to use it.
+Similar logic can appear in separate parts of the pipeline, often under different names or SQL structure. The opportunity is to factor repeated work into a shared computation and rewrite consumers to use that shared result.
+
+\head{Downstream-aware pruning}
+Later transformations reveal which columns, joins, or intermediate results are never used. The opportunity is to remove work that is provably irrelevant to all downstream outputs.
+
+\head{Pipeline-aware work placement}
+The graph shows where expensive operations occur relative to filters, projections, aggregations, and joins. The opportunity is to move expensive work after data-reducing steps as long as final outputs are not impacted.
 
 \head{Rewrite-materialization coupling}
-The best structure depends on which nodes are persisted. A rewrite that creates a shared node only helps if that node is materialized appropriately; inlining it as a view may simply duplicate the work downstream.
+The best logical structure depends on which nodes are persisted. A rewrite that creates a shared node only helps if that node is persisted appropriately; inlining it as a view may simply duplicate the work downstream.
 
-\head{Freshness-aware recomputation}
-The cost of a node is not just its per-run cost. It is the cost multiplied by how often the node must produce useful new output. The optimizer can skip over-scheduled work, move slow-changing logic onto a slow cadence, or avoid forcing a slow branch to refresh at the rate of a fast one.
+\head{Frequency-aware optimization}
+The cost of a transformation is not just its per-run cost. It is the cost multiplied by how often the transformation must produce useful new output. The optimizer can align computation frequency with input-change rates and output-consumption rates, avoiding refreshes that do not impact consumers.
 
 \head{Global rewrite composition}
-Local wins can conflict. Two refactorings may touch the same model, make incompatible assumptions about an intermediate contract, or interact through materialization choices. A dependency-aware optimizer needs a global selection step rather than a greedy sequence of local rewrites.
+The six opportunities above can interact. Two refactorings may touch the same transformation, make incompatible assumptions about an intermediate result, or interact through persistence choices. A dependency-aware optimizer needs a global selection step rather than a greedy sequence of local rewrites.
 
-We now illustrate three representative classes that \tool discovers. Each requires the optimizer to read and reason about SQL definitions \emph{across} model boundaries within the DAG. The SQL in each example is simplified for presentation; domain-specific details are abstracted away.
+We now illustrate three representative classes that \tool discovers. Each requires the optimizer to read and reason about SQL definitions across transformation boundaries within the DAG. The SQL in each example is simplified for presentation; domain-specific details are abstracted away.
 
 %==============================================================
 % EXAMPLE 1: Semantic Factorization
 %==============================================================
 \head{Example 1: Non-local semantic reuse}
-A pipeline contains seven classifier models that each tag orders with a service category (\texttt{dialysis}, \texttt{psychiatric}, and five others).
+A pipeline contains seven classifier transformations that each tag orders with a service category (\texttt{dialysis}, \texttt{psychiatric}, and five others).
 The input is a \texttt{claims} table in which each row represents one item of an order, so a single order has many rows.
 Each classifier scans \texttt{claims}, keeps rows whose codes match its category's code list, and returns the distinct \texttt{order\_id}s of those rows.
 The seven classifiers have \emph{different} SQL: different predicates, different code vocabularies, and in some cases different join structures.
@@ -187,7 +190,7 @@ FROM {{ ref('order_flags') }}
 WHERE f_dia = 1
 \end{lstlisting}
 \end{minipage}
-\caption{Cross-model semantic factorization. Seven classifiers with no syntactic overlap perform the same semantic operation on a shared parent. \tool synthesizes a new shared model that pre-aggregates all classifier flags in one pass.}
+\caption{Non-local semantic reuse. Seven classifiers with no syntactic overlap perform the same semantic operation on a shared parent. \tool synthesizes a new shared transformation that pre-aggregates all classifier flags in one pass.}
 \label{fig:ex-factorization}
 \end{figure}
 
@@ -195,22 +198,22 @@ WHERE f_dia = 1
 
 
 The seven classifiers share no common subexpression, yet they all perform the same \emph{semantic operation}: for each order, decide whether any of its rows match a category-specific predicate.
-\tool recognizes this cross-model pattern and factors it.
-It synthesizes a new intermediate model \texttt{order\_flags} that, in a single pass over \texttt{claims}, computes one boolean flag per category by aggregating each category's predicate with \texttt{MAX(CASE WHEN ... THEN 1 ELSE 0 END)} grouped by \texttt{order\_id}.
+\tool recognizes this cross-transformation pattern and factors it.
+It synthesizes a new intermediate transformation \texttt{order\_flags} that, in a single pass over \texttt{claims}, computes one boolean flag per category by aggregating each category's predicate with \texttt{MAX(CASE WHEN ... THEN 1 ELSE 0 END)} grouped by \texttt{order\_id}.
 Each original classifier is then rewritten as a lightweight lookup: select the orders whose corresponding flag in \texttt{order\_flags} is~$1$.
 Seven full scans and seven independent grouping passes over \texttt{claims} are replaced with one pre-aggregation pass and seven inexpensive boolean filters.
  
 This optimization requires three capabilities that go beyond traditional techniques.
-First, the optimizer must recognize that seven syntactically dissimilar models perform the same semantic operation, which syntactic subexpression matching, the basis of multi-query optimization (MQO)~\cite{sellis1988multiple} and common subexpression elimination, cannot do.
-Second, it must \emph{invent} a new intermediate model absent from the original project; materialized view recommendation tools~\cite{agrawal2000automated} synthesize candidate views, but they too rely on syntactic subexpression mining, of which the seven classifiers share none.
-Third, it must rewrite the dependent models to consume the new intermediate while preserving end-to-end equivalence, a multi-model restructuring that single-query rewrite systems~\cite{wetune,rbot} do not attempt.
+First, the optimizer must recognize that seven syntactically dissimilar transformations perform the same semantic operation, which syntactic subexpression matching, the basis of multi-query optimization (MQO)~\cite{sellis1988multiple} and common subexpression elimination, cannot do.
+Second, it must \emph{invent} a new intermediate transformation absent from the original project; materialized view recommendation tools~\cite{agrawal2000automated} synthesize candidate views, but they too rely on syntactic subexpression mining, of which the seven classifiers share none.
+Third, it must rewrite the dependent transformations to consume the new intermediate while preserving end-to-end equivalence, a multi-transformation restructuring that single-query rewrite systems~\cite{wetune,rbot} do not attempt.
 
 %==============================================================
 % EXAMPLE 2: Cross-Boundary Reasoning
 %==============================================================
-\head{Example 2: Cross-boundary semantics and contract freedom}
-The same project contains a classifier \texttt{nursing} that filters for skilled-nursing claims by facility code, then performs an anti-join against a sibling model \texttt{equipment} to exclude equipment-related claims (Figure~\ref{fig:ex-crossboundary}, left).
-The anti-join forces the engine to materialize \texttt{equipment}, build a hash table, and probe it for every row of \texttt{claims}; it also introduces a DAG dependency that serializes the two models.
+\head{Example 2: Cross-boundary rewriting}
+The same project contains a classifier \texttt{nursing} that filters for skilled-nursing claims by facility code, then performs an anti-join against a sibling transformation \texttt{equipment} to exclude equipment-related claims (Figure~\ref{fig:ex-crossboundary}, left).
+The anti-join forces the engine to produce \texttt{equipment}, build a hash table, and probe it for every row of \texttt{claims}; it also introduces a dependency edge that serializes the two transformations.
 
 
 
@@ -250,13 +253,13 @@ WHERE c.facility_code
 
  
 -- equipment is removed if no
--- other model depends on it;
+-- other transformation reads it;
 -- otherwise its definition
 -- is unchanged.
 \end{lstlisting}
 \vspace{1.6\baselineskip}
 \end{minipage}
-\caption{Cross-boundary semantic reasoning. By reading the SQL of the sibling \texttt{equipment} model, \tool determines that the anti-join is equivalent to a scalar predicate on a shared parent. The hash anti-join, the auxiliary scan, and the DAG dependency are all eliminated.}
+\caption{Cross-boundary rewriting. By reading the SQL of the sibling transformation \texttt{equipment}, \tool determines that the anti-join is equivalent to a scalar predicate on a shared parent. The hash anti-join, the auxiliary scan, and the dependency edge are all eliminated.}
 \label{fig:ex-crossboundary}
 \end{figure}
 
@@ -264,20 +267,20 @@ WHERE c.facility_code
 
 
 By reading the SQL definition of \texttt{equipment}, \tool discovers that it computes nothing more than a single-predicate filter on a shared parent.
-The anti-join is therefore equivalent to an inline scalar predicate on \texttt{claims}, as shown on the right of the figure: the hash anti-join, the auxiliary scan, and the cross-model DAG dependency are all eliminated.
+The anti-join is therefore equivalent to an inline scalar predicate on \texttt{claims}, as shown on the right of the figure: the hash anti-join, the auxiliary scan, and the cross-transformation dependency are all eliminated.
 The same reasoning generalizes to every sibling classifier that uses \texttt{equipment} as an exclusion list, compounding the benefit across the pipeline.
 
-The equivalence enabling this rewrite is not declared anywhere; it is \emph{embedded in the SQL of another model file}.
-A traditional engine sees \texttt{equipment} either as a base table to be probed or as a view to be expanded into the local query, neither of which performs the cross-model analysis needed to eliminate the join entirely.
+The equivalence enabling this rewrite is not declared anywhere; it is \emph{embedded in the SQL of another transformation file}.
+A traditional engine sees \texttt{equipment} either as a base table to be probed or as a view to be expanded into the local query, neither of which performs the cross-transformation analysis needed to eliminate the join entirely.
 We acknowledge a tradeoff: the rewrite couples \texttt{nursing} to the current definition of \texttt{equipment}, so a future change to that definition would require updating the rewritten consumers.
-In practice, stable upstream models such as \texttt{equipment} change rarely, and \tool re-evaluates the project after each developer change, so the cost of re-deriving the rewrite is amortized over many executions.
+In practice, stable upstream transformations such as \texttt{equipment} change rarely, and \tool re-evaluates the project after each developer change, so the cost of re-deriving the rewrite is amortized over many executions.
 
 %==============================================================
 % EXAMPLE 3: Frequency-Aware
 %==============================================================
-\head{Example 3: Freshness-aware recomputation}
+\head{Example 3: Frequency-aware optimization}
 Different sources in a SQL pipeline DAG update at different rates, and the structure of the DAG determines how much computation must be repeated at each high-frequency refresh.
-Consider a model that joins fast-changing transactional data with slow-changing reference data and applies expensive classification logic to the slow-changing side (Figure~\ref{fig:ex-frequency}, left).
+Consider a transformation that joins fast-changing transactional data with slow-changing reference data and applies expensive classification logic to the slow-changing side (Figure~\ref{fig:ex-frequency}, left).
 
 
 \begin{figure}[!htbp]
@@ -322,30 +325,30 @@ JOIN {{ ref('product_categories') }} pc
   USING (product_id)
 \end{lstlisting}
 \end{minipage}
-\caption{Frequency-aware restructuring. Splitting the model along the frequency boundary moves expensive classification onto a weekly cadence; the hourly model becomes a lightweight join.}
+\caption{Frequency-aware optimization. Splitting the transformation along the frequency boundary moves expensive classification onto a weekly cadence; the hourly transformation becomes a lightweight join.}
 \label{fig:ex-frequency}
 \end{figure}
 
 
 Because \texttt{orders} changes hourly, \texttt{order\_summary} re-executes hourly, and the multi-branch classification over \texttt{catalog} is recomputed on every hourly refresh, despite its inputs changing only weekly.
-\tool traces the update frequency from each source through the DAG, identifies that this model has \emph{mixed-frequency inputs}, and splits it along the frequency boundary.
-The expensive classification is extracted into a new slow-frequency model, and the original model becomes a lightweight equi-join.
+\tool traces the update frequency from each source through the DAG, identifies that this transformation has \emph{mixed-frequency inputs}, and splits it along the frequency boundary.
+The expensive classification is extracted into a new slow-frequency transformation, and the original transformation becomes a lightweight equi-join.
 When this pattern recurs across many consumers of the same slow-changing reference data, the savings compound: each hourly refresh avoids redundant recomputation of logic whose inputs have not changed.
 
-This optimization is invisible to optimizers that treat cost as a fixed per-query quantity: the benefit of splitting the model is realized only when the two halves are known to execute at different rates.
+This optimization is invisible to optimizers that treat cost as a fixed per-query quantity: the benefit of splitting the transformation is realized only when the two halves are known to execute at different rates.
 Materialized view selection considers update cost but does not restructure the DAG to align computation with update frequency, and traditional query rewriters have no notion of refresh schedule at all.
 
 \subsection{Why Existing Techniques Fall Short}
 \label{sec:why-different}
 
 The three examples above are not isolated curiosities; they illustrate a general capability gap.
-Single-query rewrite systems~\cite{wetune,rbot} operate within the boundary of one query and cannot restructure across model files.
-Multi-query optimization and common subexpression elimination~\cite{sellis1988multiple} share intermediate computations across queries but rely on syntactic matching, so they miss the cross-model semantic equivalence in Example~1.
+Single-query rewrite systems~\cite{wetune,rbot} operate within the boundary of one query and cannot restructure across transformation files.
+Multi-query optimization and common subexpression elimination~\cite{sellis1988multiple} share intermediate computations across queries but rely on syntactic matching, so they miss the cross-transformation semantic equivalence in Example~1.
 Materialized view selection~\cite{agrawal2000automated} chooses among existing view candidates and treats update cost as a static parameter rather than as a structural driver of DAG design (Example~3).
 Code clone detection and lineage tools can identify structural similarity or trace data provenance, but they do not perform the optimization itself.
 
 The gap is not that any one of these techniques is poorly designed; it is that none of them targets the setting we are concerned with.
-Optimizing a SQL pipeline DAG requires an optimizer that can combine the six capabilities above: read semantics across node boundaries, exploit freedom over internal contracts, find semantic reuse beyond syntactic overlap, evaluate rewrites together with materialization choices, account for recurring refresh behavior, and compose interacting rewrites globally.
+Optimizing a SQL pipeline DAG requires an optimizer that can combine the six capabilities above: use producer and consumer context, find semantic reuse beyond syntactic overlap, prune work that no downstream output consumes, move expensive work after data-reducing steps, evaluate rewrites together with persistence choices, and account for recurring refresh behavior.
 The remainder of this paper presents an approach that integrates these capabilities into a coherent optimization framework.
 
 
