@@ -16,15 +16,15 @@ This trend is much broader than dbt. SQLMesh~\cite{sqlmeshOverview}, Dagster ass
 \centering
 \begin{tikzpicture}[
   font=\scriptsize,
-  node distance=6mm and 7mm,
+  node distance=5mm and 4mm,
   box/.style={draw=black!70, text=black, rounded corners=2pt, align=left,
-              inner sep=2.5pt, minimum width=26mm},
+              inner sep=2.2pt, minimum width=22mm},
   edge/.style={-{Stealth[length=1.5mm]}, black!70, thin}
 ]
-\node[box] (orders) {\textbf{orders}\\raw table};
-\node[box, right=of orders] (clean) {\textbf{clean\_orders}\\\texttt{SELECT ...}\\\texttt{FROM orders}\\\texttt{WHERE status='paid'}};
-\node[box, above right=of clean] (rev) {\textbf{daily\_revenue}\\\texttt{GROUP BY day}};
-\node[box, below right=of clean] (cust) {\textbf{active\_customers}\\\texttt{SELECT DISTINCT}\\\texttt{customer\_id}};
+\node[box, minimum width=17mm] (orders) {\textbf{orders}\\raw table};
+\node[box, minimum width=24mm, right=of orders] (clean) {\textbf{clean\_orders}\\\texttt{SELECT ...}\\\texttt{FROM orders}\\\texttt{WHERE status='paid'}};
+\node[box, minimum width=20mm, above right=of clean] (rev) {\textbf{daily\_revenue}\\\texttt{GROUP BY day}};
+\node[box, minimum width=20mm, below right=of clean] (cust) {\textbf{active\_customers}\\\texttt{SELECT DISTINCT}\\\texttt{customer\_id}};
 \draw[edge] (orders) -- (clean);
 \draw[edge] (clean) -- (rev);
 \draw[edge] (clean) -- (cust);
