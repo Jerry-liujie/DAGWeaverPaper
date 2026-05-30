@@ -18,7 +18,7 @@ We evaluate \tool{} on real dbt projects, organized around three questions:
 We evaluate on two real dbt projects. \emph{Tuva} is an open-source dbt package for healthcare data transformation. The full project comprises 842 SQL models organized across 17 modules. We use the claims preprocessing module, which contains 255 models (about 30\% of the project) and is the subset whose models exhibit substantial computational complexity. We run it on a synthetic patient population of 10K, with the largest source table at 505\,MB. \emph{Stripe} is a payments-analytics project of 65 models, already factored by hand into intermediate stages so that the easy syntactic wins have been taken. We run it with the largest source table at 199\,MB. The two projects together cover the range we want to evaluate: a large project that has accumulated cross-model patterns from multiple analysts, and a smaller, already-factored project where remaining gains must come from materialization, frequency, or semantic restructuring beyond syntactic deduplication.
 
 \head{Testbed}
-Experiments run on BigQuery with a 100-slot reservation on the Standard edition under capacity-based pricing. We report slot-time as the primary cost metric, since slot-time is the billing unit under capacity pricing, and elapsed time as a secondary latency metric. Each reported number is the median of three runs. To simulate realistic production schedules, we use three frequency profiles per project that assign root and leaf models to hourly, daily, or weekly cadences, with interior models derived by propagation. Table~\ref{tab:freq-profiles} summarizes the average cadence mix per project; all frequency-weighted results in this section are averaged across the three profiles.
+Experiments run on BigQuery with a 100-slot reservation on the Standard edition under capacity-based pricing. \linc{Mention that our ttechnique can optimize SQL pipelines in general. We just choose BigQuery and dbt as these are the systems that our open source projects use.} We report slot-time as the primary cost metric, since slot-time is the billing unit under capacity pricing, and elapsed time as a secondary latency metric. Each reported number is the median of three runs. To simulate realistic production schedules, we use three frequency profiles per project that assign root and leaf models to hourly, daily, or weekly cadences, with interior models derived by propagation. Table~\ref{tab:freq-profiles} summarizes the average cadence mix per project; all frequency-weighted results in this section are averaged across the three profiles.
 
 % \begin{table}[tb]
 % \centering
@@ -70,11 +70,11 @@ We report two views of cost. \emph{Single-run cost} is the cost of executing the
 \head{Baselines}
 We compare against three baselines spanning the design space of SQL pipeline optimization.
 
-\emph{LearnedRewrite}~\cite{learnedrewrite} is a rule-based per-query rewriter. It applies a portfolio of equivalence-preserving transformations to each model's compiled SQL independently, guided by a learned policy that selects which rules to apply and in what order. It is competitive on standalone analytical queries but has no view of the surrounding DAG.
+\emph{LearnedRewrite}~\cite{learnedrewrite} \linc{broken citation.} is a rule-based per-query rewriter. It applies a portfolio of equivalence-preserving transformations to each model's compiled SQL independently, guided by a learned policy that selects which rules to apply and in what order. It is competitive on standalone analytical queries but has no view of the surrounding DAG.
 
 \emph{GenRewrite}~\cite{genrewrite} is an LLM-based per-query rewriter. It introduces natural-language rewrite rules that transfer knowledge across queries and a counterexample-guided loop that iteratively corrects syntactic and semantic errors in the rewrites. Like LearnedRewrite, it operates one model at a time.
 
-\emph{CSE} is a cross-model common subexpression exploitation baseline patterned after Silva-Larson-Zhou~\cite{silva2012cse}, which detects subexpressions shared across a SCOPE script's stages and materializes each once, re-optimized at the query optimizer's memo. The memo step is not portable, since managed warehouses do not expose their optimizer's internal state to external tools. We adapt the approach by detecting shared subexpressions at the AST level and selecting which to materialize heuristically. CSE is the strongest available position for a syntactic, cross-model approach on a managed warehouse.
+\emph{CSE} is a cross-model common subexpression exploitation baseline patterned after Silva-Larson-Zhou~\cite{silva2012cse}, \linc{broken sitation.} which detects subexpressions shared across a SCOPE script's stages and materializes each once, re-optimized at the query optimizer's memo. The memo step is not portable, since managed warehouses do not expose their optimizer's internal state to external tools. We adapt the approach by detecting shared subexpressions at the AST level and selecting which to materialize heuristically. CSE is the strongest available position for a syntactic, cross-model approach on a managed warehouse.
 
 
 
@@ -111,6 +111,8 @@ CSE            & $-3.2$  & $-5.6$  & $-3.1$  & $-0.6$ \\
 \end{tabular}
 \end{table}
 
+\linc{I think we can tighten the discussions here if we're short on space (which I think we probably are). Right now, the discussions of each baseline and each optimization DAGSmith did are quite detailed. I think we can cut each paragraph by 20\%-30\% of we want to save space.}
+
 Each baseline falls short for a different structural reason. We name the limit in each case, then summarize the classes of optimization that account for the gap above the strongest baseline.
 
 \head{LearnedRewrite: rules tuned for standalone queries do not generalize to dbt models} LearnedRewrite applies equivalence-preserving rewrite rules independently to each model. On Tuva, the one rule that fires at scale converts \texttt{SELECT DISTINCT \ldots\ JOIN} into a join of two pre-deduplicated inputs. It wins on models whose join keys are nearly unique (the pre-dedup is cheap and shrinks the join) and loses on models whose join keys are coarse (the pre-dedup forces a full grouping pass of a wide table and the resulting plan is worse than what the warehouse planner would have chosen). The wins and losses cancel. On Stripe, an already-factored project, the syntactic shape that triggers the rule is largely absent and the rule barely fires. The headlines on both projects are essentially flat. Rule-based per-query rewriting has nothing left to do once a planner has handled the easy cases and cross-model structure is out of reach.
@@ -146,7 +148,7 @@ Table~\ref{tab:ablation-rmf} reports the improvement of each subset of $\{R, M, 
 
 \begin{table}[tb]
 \centering
-\caption{Tuva: dimension ablation (\% reduction over the original project, averaged across the three Tuva profiles in Table~\ref{tab:freq-profiles}). R = refactoring, M = materialization tuning, F = frequency optimization.}
+\caption{Tuva: dimension ablation (\% reduction over the original project, averaged across the three Tuva profiles in Table~\ref{tab:freq-profiles}). R = refactoring, M = materialization tuning, F = frequency optimization. \linc{Why we bold the R+M+F number for the elapsed time? It's not the best, right? That's actually not a super big problem, as we don't need to be better on every single number. But make sure you highlight the correct number, and in the discussion, make sure you explain this (why full is not the best on elapsed time) and your statements are consistent withe numbers here.} }
 \label{tab:ablation-rmf}
 \small
 \begin{tabular}{lrr}
@@ -177,6 +179,8 @@ The numerics admit four observations, each one reflecting a property of how the 
 \subsubsection{Dataflow Analysis}
 \label{sec:eval-ablation-dataflow}
 
+\linc{Is this subsubsection what you're planning to do or what's done? I'm confused... Where are the results/tables?}
+
 The dimension ablation above takes \tool{}'s candidate set as given. This experiment instead isolates the contribution of the dataflow analysis that produces that set (\S\ref{sec:candidate-identification}): does structural targeting direct the LLM stage to more productive regions of the DAG than alternatives that do not use it? The central design principle is that the LLM-call budget must be held fixed across all arms. Otherwise the comparison would merely reflect that more LLM invocations uncover more refactorings, rather than whether dataflow analysis spends a fixed budget more effectively. In the standard pipeline, dataflow analysis selects at most \texttt{[20]} subgraphs on Tuva, each capped at \texttt{[60]} nodes, and the LLM is given \texttt{[3]} diagnostic-and-correction attempts per subgraph. We hold this per-subgraph attempt budget fixed across every arm and compare against two alternatives.
 
 \head{Whole-DAG refactoring} The first alternative supplies the entire project to the LLM under the same 3-attempt budget. This arm tests whether restricting the LLM's attention to a bounded region is necessary at all. On Tuva, the whole DAG fits within the context window (134k input tokens), and the analysis phase succeeds: the LLM identifies most of the opportunities that our pipeline surfaces. Implementation then fails for three compounding reasons. First, length: the response must restate every rewritten model in full, growing long enough that the LLM fails to finish and silently truncates, leaving dangling references. The truncated output is not a runnable project, so this arm yields no valid DAG to measure; we therefore report its behavior rather than a cost. Second, interdependence: the more models a single attempt rewrites, the more cross-model references it must keep consistent, and a fix to one model breaks an assumption in another. Third, non-convergence: because every broad attempt breaks somewhere, the correction loop retreats in scope, with the three attempts rewriting successively fewer models, 51, then 35, then 8. This exposes a dilemma whole-DAG refactoring cannot escape: a broad rewrite captures most gain but touches too many interdependent models to verify, while a rewrite narrow enough to verify captures only a fraction of the gain. With no way to decompose the project, the LLM retreats to the safe, low-gain end. Dataflow analysis resolves the dilemma: each subgraph is small enough to verify, yet the pipeline still reaches the high-value regions by examining them one at a time.
@@ -193,11 +197,10 @@ The dimension ablation above takes \tool{}'s candidate set as given. This experi
 
 
 
-
-
-
 \subsection{System Characterization}
 \label{sec:eval-system}
+
+\linc{The topics seem reasonable to me, but we need to finish this subsection...}
 
 This subsection asks whether the machinery that produces the gains above is itself sound and affordable. We measure the accuracy of the cost model that drives materialization and refactoring decisions, the effectiveness of the equivalence-verification loop at catching unsafe rewrites, and the LLM cost of running \tool{} end-to-end.
 
