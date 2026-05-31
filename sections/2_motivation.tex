@@ -113,22 +113,23 @@ Together, these properties define a distinct optimization setting. The optimizer
 
 The properties above create a broader opportunity space than the three examples in this section can cover exhaustively. We organize the space into six recurring classes that map directly to the components of \tool in Section~\ref{sec:approach}.
 
-\head{Cross-boundary rewriting}
+
+\head{\textbf{(1) Cross-boundary rewriting}}
 Producer-consumer edges expose transformation boundaries that may be bypassed, shifted, or replaced. The optimization opportunity is to replace a cross-node dependency with a cheaper equivalent relationship while preserving the final outputs of the pipeline.
-
-\head{Non-local semantic reuse}
+ 
+\head{\textbf{(2) Non-local semantic reuse}}
 Similar logic can appear in separate parts of the pipeline, often under different names or SQL structure. The opportunity is to factor repeated work into a shared computation and rewrite consumers to use that shared result.
-
-\head{Downstream-aware pruning}
+ 
+\head{\textbf{(3) Downstream-aware pruning}}
 Later transformations reveal which columns, joins, or intermediate results are never used. The opportunity is to remove work that is provably irrelevant to all downstream outputs.
-
-\head{Pipeline-aware work placement}
+ 
+\head{\textbf{(4) Pipeline-aware work placement}}
 The graph shows where expensive operations occur relative to filters, projections, aggregations, and joins. The opportunity is to move expensive work after data-reducing steps as long as final outputs are not impacted.
-
-\head{Rewrite-materialization coupling}
+ 
+\head{\textbf{(5) Rewrite-materialization coupling}}
 The best logical structure depends on which nodes are persisted. A rewrite that creates a shared node only helps if that node is persisted appropriately; inlining it as a view may simply duplicate the work downstream.
-
-\head{Frequency-aware optimization}
+ 
+\head{\textbf{(6) Frequency-aware optimization}}
 The cost of a transformation is not just its per-run cost. It is the cost multiplied by how often the transformation must produce useful new output. The optimizer can align computation frequency with input-change rates and output-consumption rates, avoiding refreshes that do not impact consumers.
 
 \head{Global rewrite composition}
