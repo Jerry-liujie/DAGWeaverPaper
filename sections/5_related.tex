@@ -2,8 +2,38 @@
 \section{Related Work}
 \label{sec:related}
 
+
+\head{Positioning}
+\tool is, to the best of our knowledge, the first system to treat the explicit pipeline DAG as the optimization object, restructuring node boundaries and deciding refactoring, materialization, and refresh frequency jointly. The closest lines of work each hold one of these dimensions fixed.
+
+
+\head{Single-query SQL rewriting}
+Rule-based rewriters~\cite{wetune,learnedrewrite}, program-synthesis rewriters~\cite{slabcity}, and LLM-based rewriters~\cite{genrewrite,rbot,llmr2} transform a query into an equivalent form before the database optimizer plans it; two of our baselines, LearnedRewrite~\cite{learnedrewrite} and GenRewrite~\cite{genrewrite}, are of this kind. All of them optimize one statement in isolation and leave the surrounding dependency graph unchanged, so rewrites whose benefit depends on neighboring transformations, such as reusing logic across models or removing work that no downstream output consumes, fall outside their scope.
+
+\head{Multi-query optimization and view selection}
+Multi-query optimization~\cite{sellis1988multiple,roy2000efficient} and common-subexpression sharing~\cite{scopeCSE,similarSubexpr} reuse intermediate results across statements, and materialized-view selection~\cite{agrawal2000automated,harinarayan1996implementing} precomputes chosen results and rewrites consumers to read them; our cross-model CSE baseline follows this line~\cite{scopeCSE}. These techniques match on syntactic structure and select persistence among candidates that already exist. They do not recognize the same logical computation written in dissimilar SQL, as in Example~1,  and they keep every output intact, sharing how results are computed but never which are needed; \tool reads downstream demand to trim redundant computation and simplify the dependency graph (Example~2).
+
+\head{View maintenance and refresh scheduling}
+Incremental view maintenance~\cite{ivm} and streaming materialized-view systems~\cite{materialize,risingwave} keep derived results fresh by processing only the rows that change, which lowers the cost of each refresh. \tool addresses freshness from the opposite direction: rather than cheapening a refresh, it aligns how often each node runs with how often its inputs change and its outputs are consumed, and it splits a node along a frequency boundary when slow-changing work is trapped on a fast cadence (Example~3). The two approaches are complementary and could compose.
+
+\head{Workflow orchestration}
+dbt~\cite{dbtWhatIs}, SQLMesh~\cite{sqlmeshOverview}, Airflow~\cite{airflowDags}, Dagster~\cite{dagsterAssets}, Prefect~\cite{prefectTasks}, Argo~\cite{argoDag}, Luigi~\cite{luigiDocs}, and Databricks Workflows~\cite{databricksJobs} express recurring transformations and their dependencies as a DAG, the setting \tool targets. Their schedulers optimize execution order, invalidation, retries, and resource allocation, but they leave the SQL semantics of each node untouched, which is where \tool's reductions originate.
+
+
+
+
+
+
+
+
+
+
+\begin{comment}
+    
+
 The most closely related lines of work are database query optimization, source-to-source SQL rewriting, multi-query optimization, materialized-view recommendation, workflow scheduling, and data lineage or clone analysis for analytics pipelines. \tool differs from these lines by treating the explicit SQL pipeline DAG itself as the optimization object, allowing it to restructure node boundaries and reason jointly about semantics, materialization, and refresh frequency.
 
 Database query optimizers remain essential but orthogonal: they choose physical plans for one submitted SQL statement. \tool operates before that point, changing the maintained SQL pipeline program that produces those statements. Source-to-source SQL rewriters such as \emph{SlabCity}~\cite{slabcity}, \emph{GenRewrite}~\cite{genrewrite}, \emph{WeTune}~\cite{wetune}, and \emph{R-Bot}~\cite{rbot} also operate before the database optimizer, but they optimize one statement at a time and do not change the dependency graph around it.
 
 Multi-query optimization and common-subexpression sharing reason across multiple statements, but typically over flat workloads and mostly through syntactic overlap. They do not usually exploit output contracts, declared refresh cadences, materialization choices, or stable developer-maintained node boundaries. Materialized-view selection optimizes persistence decisions, but does not usually rewrite the graph to move computation across freshness boundaries or remove intermediate contracts. Workflow systems such as Airflow~\cite{airflowDags}, Dagster~\cite{dagsterAssets}, Prefect~\cite{prefectTasks}, Argo~\cite{argoDag}, Luigi~\cite{luigiDocs}, SQLMesh~\cite{sqlmeshOverview}, and Databricks Workflows~\cite{databricksJobs} expose dependencies and schedules, but their optimizers primarily decide ordering, invalidation, or execution policy rather than semantic SQL rewrites. \tool targets the gap between these areas: dependency-aware source-to-source optimization for recurring SQL pipeline DAGs.
+\end{comment}

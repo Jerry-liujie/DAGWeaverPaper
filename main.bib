@@ -48,20 +48,34 @@
 }
 
 @article{rbot,
-  author  = {Sun, Zhaoyan and Zhou, Xuanhe and Li, Guoliang},
-  title   = {R-Bot: An LLM-based Query Rewrite System},
-  journal = {CoRR},
-  volume  = {abs/2412.01661},
-  year    = {2024}
+  author       = {Zhaoyan Sun and
+                  Xuanhe Zhou and
+                  Guoliang Li and
+                  Xiang Yu and
+                  Jianhua Feng and
+                  Yong Zhang},
+  title        = {R-Bot: An LLM-based Query Rewrite System},
+  journal      = {Proc. {VLDB} Endow.},
+  volume       = {18},
+  number       = {12},
+  pages        = {5031--5044},
+  year         = {2025},
+  url          = {https://www.vldb.org/pvldb/vol18/p5031-li.pdf},
+  doi          = {10.14778/3750601.3750625},
+  timestamp    = {Wed, 17 Dec 2025 16:44:24 +0100},
+  biburl       = {https://dblp.org/rec/journals/pvldb/SunZLYFZ25.bib},
+  bibsource    = {dblp computer science bibliography, https://dblp.org}
 }
 
 @article{genrewrite,
-  author       = {Liu, Jie and Mozafari, Barzan},
-  title        = {Query Rewriting via Large Language Models},
-  journal      = {CoRR},
-  volume       = {abs/2403.09060},
-  year         = {2024},
-  howpublished = {\url{https://arxiv.org/abs/2403.09060}}
+  title={GenRewrite: Query Rewriting via Large Language Models},
+  author={Liu, Jie and Mozafari, Barzan},
+  journal={Proceedings of the ACM on Management of Data},
+  volume={4},
+  number={1 (SIGMOD},
+  pages={1--26},
+  year={2026},
+  publisher={ACM New York, NY, USA}
 }
 
 @misc{slabcity,
@@ -195,4 +209,123 @@
   year         = {2026},
   howpublished = {\url{https://learn.microsoft.com/en-us/azure/databricks/lakehouse/medallion}},
   note         = {Accessed 2026-05-26}
+}
+
+@article{learnedrewrite,
+  author       = {Xuanhe Zhou and
+                  Guoliang Li and
+                  Chengliang Chai and
+                  Jianhua Feng},
+  title        = {A Learned Query Rewrite System using Monte Carlo Tree Search},
+  journal      = {Proc. {VLDB} Endow.},
+  volume       = {15},
+  number       = {1},
+  pages        = {46--58},
+  year         = {2021},
+  url          = {http://www.vldb.org/pvldb/vol15/p46-li.pdf},
+  doi          = {10.14778/3485450.3485456},
+  timestamp    = {Thu, 21 Apr 2022 17:09:21 +0200},
+  biburl       = {https://dblp.org/rec/journals/pvldb/ZhouLCF21.bib},
+  bibsource    = {dblp computer science bibliography, https://dblp.org}
+}
+
+@article{llmr2,
+  author       = {Zhaodonghui Li and
+                  Haitao Yuan and
+                  Huiming Wang and
+                  Gao Cong and
+                  Lidong Bing},
+  title        = {{LLM-R2:} {A} Large Language Model Enhanced Rule-based Rewrite System
+                  for Boosting Query Efficiency},
+  journal      = {Proc. {VLDB} Endow.},
+  volume       = {18},
+  number       = {1},
+  pages        = {53--65},
+  year         = {2024},
+  url          = {https://www.vldb.org/pvldb/vol18/p53-yuan.pdf},
+  doi          = {10.14778/3696435.3696440},
+  timestamp    = {Wed, 17 Dec 2025 16:44:24 +0100},
+  biburl       = {https://dblp.org/rec/journals/pvldb/LiYWCB24.bib},
+  bibsource    = {dblp computer science bibliography, https://dblp.org}
+}
+
+@inproceedings{similarSubexpr,
+  author       = {Jingren Zhou and
+                  Per{-}{\AA}ke Larson and
+                  Johann Christoph Freytag and
+                  Wolfgang Lehner},
+  editor       = {Chee Yong Chan and
+                  Beng Chin Ooi and
+                  Aoying Zhou},
+  title        = {Efficient exploitation of similar subexpressions for query processing},
+  booktitle    = {Proceedings of the {ACM} {SIGMOD} International Conference on Management
+                  of Data, Beijing, China, June 12-14, 2007},
+  pages        = {533--544},
+  publisher    = {{ACM}},
+  year         = {2007},
+  url          = {https://doi.org/10.1145/1247480.1247540},
+  doi          = {10.1145/1247480.1247540},
+  timestamp    = {Sun, 02 Nov 2025 21:27:21 +0100},
+  biburl       = {https://dblp.org/rec/conf/sigmod/ZhouLFL07.bib},
+  bibsource    = {dblp computer science bibliography, https://dblp.org}
+}
+
+@inproceedings{scopeCSE,
+  author       = {Yasin N. Silva and
+                  Per{-}{\AA}ke Larson and
+                  Jingren Zhou},
+  editor       = {Anastasios Kementsietsidis and
+                  Marcos Antonio Vaz Salles},
+  title        = {Exploiting Common Subexpressions for Cloud Query Processing},
+  booktitle    = {{IEEE} 28th International Conference on Data Engineering {(ICDE} 2012),
+                  Washington, DC, {USA} (Arlington, Virginia), 1-5 April, 2012},
+  pages        = {1337--1348},
+  publisher    = {{IEEE} Computer Society},
+  year         = {2012},
+  url          = {https://doi.org/10.1109/ICDE.2012.106},
+  doi          = {10.1109/ICDE.2012.106},
+  timestamp    = {Wed, 19 Mar 2025 21:16:26 +0100},
+  biburl       = {https://dblp.org/rec/conf/icde/SilvaLZ12.bib},
+  bibsource    = {dblp computer science bibliography, https://dblp.org}
+}
+
+@inproceedings{ivm,
+  author    = {Blakeley, Jos{\'e} A. and Larson, Per-{\AA}ke and Tompa, Frank Wm.},
+  title     = {Efficiently Updating Materialized Views},
+  booktitle = {Proceedings of the 1986 ACM SIGMOD International Conference on Management of Data},
+  pages     = {61--71},
+  year      = {1986},
+  publisher = {Association for Computing Machinery},
+  address   = {New York, NY, USA},
+  doi       = {10.1145/16894.16861}
+}
+
+@inproceedings{materialize,
+  author    = {McSherry, Frank},
+  title     = {Materialize: A Platform for Building Scalable Event Based Systems},
+  booktitle = {Proceedings of the 16th ACM International Conference on Distributed and Event-Based Systems},
+  pages     = {3},
+  year      = {2022},
+  publisher = {Association for Computing Machinery},
+  address   = {New York, NY, USA},
+  doi       = {10.1145/3524860.3544408}
+}
+
+@inproceedings{risingwave,
+  author    = {Wang, Yanghao and Liu, Zhi},
+  title     = {A Sneak Peek at {RisingWave}: A Cloud-Native Streaming Database},
+  booktitle = {Proceedings of the 16th ACM International Conference on Distributed and Event-Based Systems},
+  pages     = {190--193},
+  year      = {2022},
+  publisher = {Association for Computing Machinery},
+  address   = {New York, NY, USA},
+  doi       = {10.1145/3524860.3543284}
+}
+
+@misc{dbtWhatIs,
+  author       = {Handy, Tristan},
+  title        = {What, Exactly, Is dbt?},
+  year         = {2026},
+  howpublished = {\url{https://www.getdbt.com/blog/what-exactly-is-dbt}},
+  note         = {Accessed: 2026-05-30}
 }
