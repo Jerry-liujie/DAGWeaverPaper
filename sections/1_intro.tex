@@ -9,7 +9,7 @@ This has created a major efficiency gap between the complexity of the SQL querie
 \ph{Rise of SQL Pipelines}
 Data teams are increasingly building large, recurring SQL pipelines. This growth is driven by complex business logic that must be computed repeatedly and reused consistently across governed dashboards, AI-ready feature tables, self-service BI datasets, compliance reports, and downstream applications.
  One of the most widely adopted tools for these workflows is \emph{dbt} (the data build tool)~\cite{dbtWhatExactly}, reported to be used by 50K+ data teams weekly across the world~\cite{dbtComplexity}. 
-dbt lets teams write transformations as version-controlled SQL \texttt{SELECT} statements (called ``models'' in dbt, which we use interchangeably in this paper), declare dependencies among them, and compile the resulting graph into SQL jobs executed by a data warehouse.  Figure~\ref{fig:intro-toy} gives a toy example. A raw orders table feeds a cleaning transformation; the cleaned result feeds both a revenue table and a daily active-customer table. The SQL text explains each local transformation, while the edges explain how the transformations compose into a pipeline.
+dbt lets teams write transformations as version-controlled SQL \code{SELECT} statements (called ``models'' in dbt, which we use interchangeably in this paper), declare dependencies among them, and compile the resulting graph into SQL jobs executed by a data warehouse.  Figure~\ref{fig:intro-toy} gives a toy example. A raw orders table feeds a cleaning transformation; the cleaned result feeds both a revenue table and a daily active-customer table. The SQL text explains each local transformation, while the edges explain how the transformations compose into a pipeline.
 This trend is much broader than dbt. SQLMesh~\cite{sqlmeshOverview}, Dagster asset graphs~\cite{dagsterAssets}, Airflow directed acyclic graphs~\cite{airflowDags}, Prefect flows~\cite{prefectTasks}, Argo Workflows~\cite{argoDag}, Databricks Workflows~\cite{databricksJobs}, and medallion lakehouse pipelines~\cite{databricksMedallion} all represent recurring data transformations through explicit dependencies. In this paper, we target the SQL subset of this broader pattern, which we refer to as \emph{SQL pipeline DAG}: a recurring directed acyclic graph whose nodes are SQL transformations or SQL-produced tables/views, and whose edges record that one node reads another node's output.
 
 \begin{figure}[t]
@@ -22,9 +22,9 @@ This trend is much broader than dbt. SQLMesh~\cite{sqlmeshOverview}, Dagster ass
   edge/.style={-{Stealth[length=1.5mm]}, black!70, thin}
 ]
 \node[box, minimum width=17mm] (orders) {\textbf{orders}\\raw table};
-\node[box, minimum width=24mm, right=of orders] (clean) {\textbf{clean\_orders}\\\texttt{SELECT ...}\\\texttt{FROM orders}\\\texttt{WHERE status='paid'}};
-\node[box, minimum width=20mm, above right=of clean] (rev) {\textbf{daily\_revenue}\\\texttt{GROUP BY day}};
-\node[box, minimum width=20mm, below right=of clean] (cust) {\textbf{active\_customers}\\\texttt{SELECT DISTINCT}\\\texttt{customer\_id}};
+\node[box, minimum width=24mm, right=of orders] (clean) {\textbf{clean\_orders}\\\code{SELECT ...}\\\code{FROM orders}\\\code{WHERE status='paid'}};
+\node[box, minimum width=20mm, above right=of clean] (rev) {\textbf{daily\_revenue}\\\code{GROUP BY day}};
+\node[box, minimum width=20mm, below right=of clean] (cust) {\textbf{active\_customers}\\\code{SELECT DISTINCT}\\\code{customer\_id}};
 \draw[edge] (orders) -- (clean);
 \draw[edge] (clean) -- (rev);
 \draw[edge] (clean) -- (cust);
