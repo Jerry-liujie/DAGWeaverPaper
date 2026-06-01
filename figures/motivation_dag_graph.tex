@@ -3,10 +3,13 @@
   font=\scriptsize,
   n/.style={draw, rounded corners=2pt, align=center, minimum height=7mm, minimum width=17mm, inner sep=2pt},
   src/.style={n, fill=gray!12},
-  new/.style={n, fill=blue!8, thick, minimum width=21mm},
+  new/.style={n, fill=green!13, thick, minimum width=21mm},
   rew/.style={n, fill=blue!4, thick, minimum width=19mm},
   gone/.style={n, fill=red!8, dashed, minimum width=20mm},
   wide/.style={n, minimum width=29mm},
+  legend/.style={draw, rounded corners=1pt, align=center, font=\fontsize{3.6}{4.0}\selectfont, minimum height=2.6mm, inner sep=0.45pt},
+  legnew/.style={legend, fill=green!13, thick},
+  legrew/.style={legend, fill=blue!4, thick},
   arr/.style={-{Stealth[length=1.6mm,width=1.15mm]}, thin, shorten >=2.4pt}
 ]
 \draw[densely dotted, thick] (5.55,-2.05) -- (5.55,3.00);
@@ -30,11 +33,11 @@
 \node[src] (acode) at (7.20,-1.60) {code\_catalog\\(slow)};
 \node[new] (asf) at (9.70,1.15) {service\_flags\\(materialized)};
 \node[new] (asc) at (9.70,-1.60) {service\_code\_flags\\(slow)};
-\node[rew] (ad) at (12.35,2.15) {dialysis\\(rewritten)};
-\node[rew] (ap) at (12.35,1.25) {psychiatric\\(rewritten)};
-\node[rew] (an) at (12.35,-0.45) {nursing\\(rewritten)};
-\node[rew, minimum width=25mm] (asum) at (12.65,-1.60) {claims\_summary\\(rewritten)};
-\node[gone] (ae) at (12.40,0.40) {equipment\\(pruned if unused)};
+\node[rew, minimum width=22mm, anchor=west] (ad) at (11.55,2.15) {dialysis\\(rewritten)};
+\node[rew, minimum width=22mm, anchor=west] (ap) at (11.55,1.25) {psychiatric\\(rewritten)};
+\node[rew, minimum width=22mm, anchor=west] (an) at (11.55,-0.45) {nursing\\(rewritten)};
+\node[rew, minimum width=27mm, anchor=west] (asum) at (11.55,-1.60) {claims\_summary\\(rewritten)};
+\node[gone, minimum width=22mm, anchor=west] (ae) at (11.55,0.40) {equipment\\(pruned if unused)};
 \draw[arr] (ac.east) -- (asf.west);
 \draw[arr] (asf.east) -- (ad.west);
 \draw[arr] (asf.east) -- (ap.west);
@@ -42,5 +45,11 @@
 \draw[arr] (acode.east) -- (asc.west);
 \draw[arr] (ac.east) -- (asum.west);
 \draw[arr] (asc.east) -- (asum.west);
+\node[font=\fontsize{3.6}{4.0}\selectfont\bfseries, anchor=east] at (6.50,-2.35) {Legend:};
+\node[legend, fill=gray!12, minimum width=11mm] at (7.10,-2.35) {base table};
+\node[legend, fill=white, minimum width=13mm] at (8.40,-2.35) {original model};
+\node[legnew, minimum width=10mm] at (9.60,-2.35) {new model};
+\node[legrew, minimum width=13mm] at (10.85,-2.35) {rewritten model};
+\node[legend, fill=red!8, dashed, minimum width=12mm] at (12.20,-2.35) {pruned model};
 \end{tikzpicture}%
 }

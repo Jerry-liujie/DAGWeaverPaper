@@ -7,11 +7,11 @@ Before presenting our approach, we first provide the necessary background on SQL
 \subsection{Background: SQL Pipeline DAGs}
 \label{sec:dbt-setting}
 
- \tofix{A \emph{SQL pipeline DAG} is a recurring SQL program whose nodes are named transformations and whose directed edges record producer-consumer relationships among their outputs (see Figure~\ref{fig:intro-toy} for a toy example). The DAG determines evaluation order, while node metadata can specify whether each result is materialized and how frequently it is refreshed. Because dbt calls each named SQL transformation a \emph{model}, we use \emph{model} for dbt-specific examples and \emph{transformation} for the broader setting.} 
+ A \emph{SQL pipeline DAG} is a recurring SQL program whose nodes are named transformations and whose directed edges record producer-consumer relationships among their outputs (see Figure~\ref{fig:intro-toy} for a toy example). The DAG determines evaluation order, while node metadata can specify whether each result is materialized and how frequently it is refreshed. Because dbt calls each named SQL transformation a \emph{model}, we use \emph{model} for dbt-specific examples and \emph{transformation} for the broader setting. 
  
 
 \ph{Target workload}
-\tofix{Although our examples and evaluation use dbt projects, the optimization problem is more general. \tool targets recurring SQL-based DAGs: pipelines in which node logic is available as SQL, edges expose producer-consumer dependencies, and system metadata records persistence and refresh behavior. dbt is a prominent instance of this setting, but similar dependency graphs arise in SQLMesh~\cite{sqlmeshOverview}, Dagster~\cite{dagsterAssets}, Airflow~\cite{airflowDags}, Prefect~\cite{prefectTasks}, Argo~\cite{argoDag}, Databricks Workflows and Lakeflow Jobs~\cite{databricksJobs}, medallion lakehouse pipelines~\cite{databricksMedallion}, and Luigi~\cite{luigiDocs}.}
+Although our examples and evaluation use dbt projects, the optimization problem is more general. \tool targets recurring SQL-based DAGs: pipelines in which node logic is available as SQL, edges expose producer-consumer dependencies, and system metadata records persistence and refresh behavior. dbt is a prominent instance of this setting, but similar dependency graphs arise in SQLMesh~\cite{sqlmeshOverview}, Dagster~\cite{dagsterAssets}, Airflow~\cite{airflowDags}, Prefect~\cite{prefectTasks}, Argo~\cite{argoDag}, Databricks Workflows and Lakeflow Jobs~\cite{databricksJobs}, medallion lakehouse pipelines~\cite{databricksMedallion}, and Luigi~\cite{luigiDocs}.
 
 \begin{comment}
 \subsection{Motivating Examples (Original)}
@@ -328,33 +328,39 @@ Materialized view selection considers update cost but does not restructure the D
 \subsection{Motivating Examples}
 \label{sec:motivating-examples}
 
-\tofix{In this section, we use a small claims-processing DAG to illustrate how explicit dependencies expose optimization opportunities that are invisible when each query is rewritten in isolation.} \tofix{For space, the examples combine multiple opportunities in one small claims-processing DAG;} in practice, each opportunity can appear independently inside much larger DAGs with hundreds or thousands of models. Figure~\ref{fig:strategy-c-graph}(a) shows the original pipeline. 
-\tofix{Here, we use a simplified healthcare claims-processing pipeline, inspired by the open-source Tuva project~\cite{tuvaProject}. Its main input is \code{claims}, a large table of claim-line records that is refreshed frequently.} It feeds into 
-\tofix{service-category models such as \code{dialysis}, \code{psychiatric}, \code{equipment}, and \code{nursing}. These models classify claim lines using SQL predicates over claim attributes; Figure~\ref{fig:strategy-c-sql} gives simplified examples.} The \code{nursing} model excludes claim lines already categorized as equipment, so it reads \code{equipment} as an exclusion list. The \code{claims\_summary} model joins claim lines with a 
-\tofix{slow-changing lookup table, \code{code\_catalog}, that maps raw claim codes to descriptions,} and then applies code-grouping logic over those descriptions. We next describe three examples that exploit these explicit dependencies; when all applied together, they produce the more efficient DAG in Figure~\ref{fig:strategy-c-graph}(b).
+In this section, we use a small claims-processing DAG to illustrate how explicit dependencies expose optimization opportunities that are invisible when each query is rewritten in isolation. For space, the examples combine multiple opportunities in one small claims-processing DAG; in practice, each opportunity can appear independently inside much larger DAGs with hundreds or thousands of models. Figure~\ref{fig:strategy-c-graph}(a) shows the original pipeline. 
+Here, we use a simplified healthcare claims-processing pipeline, inspired by the open-source Tuva project~\cite{tuvaProject}. Its main input is \code{claims}, a large table of claim-line records that is refreshed frequently. It feeds into 
+service-category models such as \code{dialysis}, \code{psychiatric}, \code{equipment}, and \code{nursing}. These models classify claim lines using SQL predicates over claim attributes; Figure~\ref{fig:strategy-c-sql} gives simplified examples. The \code{nursing} model excludes claim lines already categorized as equipment, so it reads \code{equipment} as an exclusion list. The \code{claims\_summary} model joins claim lines with a 
+slow-changing lookup table, \code{code\_catalog}, that maps raw claim codes to descriptions, and then applies code-grouping logic over those descriptions. We next describe three examples that exploit these explicit dependencies; when all applied together, they produce the more efficient DAG in Figure~\ref{fig:strategy-c-graph}(b).
 
 \begin{figure*}[t]
 \centering
 \input{figures/motivation_dag_graph}
-\caption{Healthcare SQL pipeline DAG used for three motivating examples. The dotted line separates the original graph (a) from the cumulative rewritten graph (b). The rewritten graph introduces reusable service flags, rewrites downstream service-category models to consume those flags, removes the \code{equipment} dependency from \code{nursing}, and moves slow-changing reference-code grouping out of the fast claims path.}
+\caption{Healthcare SQL pipeline DAG used for three motivating examples. The dotted line separates the original DAG (a) from the cumulative rewritten DAG (b). The rewritten DAG introduces reusable \code{service\_flags}, rewrites downstream models (\code{dialysis}, \code{psychiatric}, and \code{nursing}), removes the \code{equipment} dependency from \code{nursing}, and moves slow-changing reference-code grouping out of the fast claims path.}
 \label{fig:strategy-c-graph}
 \end{figure*}
 
 \begin{figure*}[t]
 \centering
-\begin{minipage}[t]{0.32\textwidth}
-\figsubheader{Ex. 1: service flags}
-\begin{lstlisting}[language=SQL,basicstyle=\ttfamily\scriptsize,breaklines=true]
--- dialysis model before
+\captionsetup[subfigure]{justification=centering}
+\begin{subfigure}[t]{0.32\textwidth}
+\centering
+\begin{minipage}[t][51mm][t]{\linewidth}
+{\scriptsize\textbf{Exposes:} cross-graph redundancy; reuse context\par}
+{\scriptsize\textbf{Enables:} non-local reuse; rewrite-materialization co-optimization\par\smallskip}
+{\scriptsize\textbf{Before}\par}
+\begin{lstlisting}[language=SQL,basicstyle=\ttfamily\tiny,breaklines=true]
+-- dialysis model
 SELECT DISTINCT claim_id
 FROM claims
 WHERE bill_code LIKE '72%'
    OR taxonomy IN (...);
-
+\end{lstlisting}
+{\scriptsize\textbf{After}\par}
+\begin{lstlisting}[language=SQL,basicstyle=\ttfamily\tiny,breaklines=true]
 -- new service_flags model
 SELECT claim_id,
-  MAX(bill_code LIKE '72%'
-      OR taxonomy IN (...)) AS f_dia,
+  MAX(bill_code LIKE '72%' OR taxonomy IN (...)) AS f_dia,
   MAX(diagnosis BETWEEN '290' AND '319') AS f_psy
 FROM claims;
 
@@ -362,32 +368,50 @@ FROM claims;
 SELECT claim_id FROM service_flags
 WHERE f_dia;
 \end{lstlisting}
-\end{minipage}\hfill
-\begin{minipage}[t]{0.32\textwidth}
-\figsubheader{Ex. 2: nursing/equipment}
-\begin{lstlisting}[language=SQL,basicstyle=\ttfamily\scriptsize,breaklines=true]
--- nursing model before
+\end{minipage}
+\caption{Example 1: shared service flags}
+\label{fig:strategy-c-sql-reuse}
+\end{subfigure}\hfill
+\begin{subfigure}[t]{0.32\textwidth}
+\centering
+\begin{minipage}[t][51mm][t]{\linewidth}
+{\scriptsize\textbf{Exposes:} edge semantics; downstream demand\par}
+{\scriptsize\textbf{Enables:} edge simplification; downstream-aware pruning\par\smallskip}
+{\scriptsize\textbf{Before}\par}
+\begin{lstlisting}[language=SQL,basicstyle=\ttfamily\tiny,breaklines=true]
+-- nursing model
 SELECT * FROM claims c
 WHERE c.facility_code IN ('31','32')
 AND NOT EXISTS (
   SELECT 1 FROM equipment e
   WHERE e.claim_id = c.claim_id);
-
+\end{lstlisting}
+{\scriptsize\textbf{After}\par}
+\begin{lstlisting}[language=SQL,basicstyle=\ttfamily\tiny,breaklines=true]
 -- rewritten nursing model
 SELECT * FROM claims c
 WHERE c.facility_code IN ('31','32')
   AND c.category <> 'equipment';
 
--- equipment model has no remaining consumers
+-- equipment has no remaining consumers
 \end{lstlisting}
-\end{minipage}\hfill
-\begin{minipage}[t]{0.32\textwidth}
-\figsubheader{Ex. 3: slow references}
-\begin{lstlisting}[language=SQL,basicstyle=\ttfamily\scriptsize,breaklines=true]
--- claims_summary before
+\end{minipage}
+\caption{Example 2: removing an exclusion edge}
+\label{fig:strategy-c-sql-edge}
+\end{subfigure}\hfill
+\begin{subfigure}[t]{0.32\textwidth}
+\centering
+\begin{minipage}[t][51mm][t]{\linewidth}
+{\scriptsize\textbf{Exposes:} refresh patterns; operator placement\par}
+{\scriptsize\textbf{Enables:} frequency-aware optimization; work placement\par\smallskip}
+{\scriptsize\textbf{Before}\par}
+\begin{lstlisting}[language=SQL,basicstyle=\ttfamily\tiny,breaklines=true]
+-- claims_summary model
 SELECT c.id, group_code(r.description) AS grp
 FROM claims c JOIN code_catalog r USING(code);
-
+\end{lstlisting}
+{\scriptsize\textbf{After}\par}
+\begin{lstlisting}[language=SQL,basicstyle=\ttfamily\tiny,breaklines=true]
 -- new service_code_flags model
 SELECT code, group_code(description) AS grp
 FROM code_catalog;
@@ -397,7 +421,10 @@ SELECT c.id, f.grp
 FROM claims c JOIN service_code_flags f USING(code);
 \end{lstlisting}
 \end{minipage}
-\caption{SQL fragments for the healthcare examples in Figure~\ref{fig:strategy-c-graph}. Example 1 creates a new \code{service\_flags} model and rewrites concrete downstream models such as \code{dialysis}. Example 2 rewrites the \code{nursing} model and may leave \code{equipment} with no consumers. Example 3 creates a slow \code{service\_code\_flags} model and rewrites \code{claims\_summary} to join it.}
+\caption{Example 3: precomputing slow-side logic}
+\label{fig:strategy-c-sql-frequency}
+\end{subfigure}
+\caption{SQL fragments for the healthcare examples in Figure~\ref{fig:strategy-c-graph}. Each panel corresponds to one motivating example: (a) Example 1 factors repeated service-category logic into shared flags, (b) Example 2 removes an exclusion-list dependency, and (c) Example 3 moves slow-side grouping out of the fast claims path. Each panel separates the original SQL from the rewritten SQL.}
 \label{fig:strategy-c-sql}
 \end{figure*}
 
