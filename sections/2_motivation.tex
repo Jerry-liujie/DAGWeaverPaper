@@ -11,7 +11,7 @@ Before presenting our approach, we first provide the necessary background on SQL
  
 
 \ph{Target workload}
-Although our examples and evaluation use dbt projects, the optimization problem is more general. \tool targets recurring SQL-based DAGs: pipelines in which node logic is available as SQL, edges expose producer-consumer dependencies, and system metadata records persistence and refresh behavior. dbt is a prominent instance of this setting, but similar dependency graphs arise in SQLMesh~\cite{sqlmeshOverview}, Dagster~\cite{dagsterAssets}, Airflow~\cite{airflowDags}, Prefect~\cite{prefectTasks}, Argo~\cite{argoDag}, Databricks Workflows and Lakeflow Jobs~\cite{databricksJobs}, medallion lakehouse pipelines~\cite{databricksMedallion}, and Luigi~\cite{luigiDocs}.
+Although we use dbt in our examples and evaluation, the optimization problem is more general. \tool targets recurring SQL-based DAGs: pipelines in which node logic is available as SQL, edges expose producer-consumer dependencies, and system metadata records persistence and refresh behavior. dbt is a prominent instance of this setting, but similar dependency graphs arise in SQLMesh~\cite{sqlmeshOverview}, Dagster~\cite{dagsterAssets}, Airflow~\cite{airflowDags}, Prefect~\cite{prefectTasks}, Argo~\cite{argoDag}, Databricks Workflows and Lakeflow Jobs~\cite{databricksJobs}, medallion lakehouse pipelines~\cite{databricksMedallion}, and Luigi~\cite{luigiDocs}.
 
 \begin{comment}
 \subsection{Motivating Examples (Original)}
@@ -428,27 +428,39 @@ FROM claims c JOIN service_code_flags f USING(code);
 \label{fig:strategy-c-sql}
 \end{figure*}
 
+
 \head{Example 1: Cross-graph redundancy + rewrite-persistence coupling}
-In Figure~\ref{fig:strategy-c-graph}(a), the fanout from \code{claims} to \code{dialysis}, \code{psychiatric}, and related service-category models exposes cross-graph redundancy: several models scan the same large source, namely \code{claims}, and evaluate related billing-code, taxonomy-code, or diagnosis-code predicates in separate SQL files. By exploiting this redundancy, one can create the shared \code{service\_flags} model in Figure~\ref{fig:strategy-c-graph}(b) and rewrite downstream models such as \code{dialysis} to read the corresponding flag, as shown in Example 1 of Figure~\ref{fig:strategy-c-sql} (\emph{non-local semantic reuse}). This scenario also allows for another optimization: the shared model can compute additional reusable flags, which is worthwhile only if the richer result is materialized once and reused by enough downstream models (\emph{rewrite-materialization co-optimization}).
+In Figure~\ref{fig:strategy-c-graph}(a), the fanout from \code{claims} to the service-category models (\code{dialysis}, \code{psychiatric}, \code{equipment}, and \code{nursing})
+exposes cross-graph redundancy: several models scan the same large source (i.e., \code{claims}), and evaluate related billing-code, taxonomy-code, or diagnosis-code predicates in separate SQL files. By exploiting this redundancy, one can create the shared \code{service\_flags} model in Figure~\ref{fig:strategy-c-graph}(b) and rewrite each of the downstream models  to read the corresponding flag. Figure~\ref{fig:strategy-c-sql-reuse} shows the rewrite for \code{dialysis}; the other service-category models can be rewritten similarly by reading their own flags.
+In \S\ref{sec:dependencies-as-signals}, we call this non-local semantic reuse.
+
+This shared model also creates a materialization choice: computing extra flags such as \code{f\_psy} pays off only when \code{service\_flags} is persisted once and reused, rather than inlined under each consumer. This is rewrite-materialization co-optimization in \S\ref{sec:dependencies-as-signals}.
+
 
 \head{Example 2: Edge semantics + downstream demand}
-We can also exploit the edge semantics in Figure~\ref{fig:strategy-c-graph}(a): the edge from \code{equipment} to \code{nursing} says that \code{nursing} consumes \code{equipment}, but the SQL definitions show that \code{nursing} uses \code{equipment} only to exclude claim lines whose category is equipment. This exclusion can be expressed directly as a predicate over \code{claims}. By exploiting this edge semantics, one can rewrite \code{nursing} as shown in Example 2 of Figure~\ref{fig:strategy-c-sql}, removing the edge from \code{equipment} to \code{nursing} in Figure~\ref{fig:strategy-c-graph}(b) (\emph{dependency-edge simplification}). The graph also exposes downstream demand: if no remaining output consumes \code{equipment}, the model can be removed (\emph{downstream-aware pruning}).
+We can also exploit the edge semantics in Figure~\ref{fig:strategy-c-graph}(a): the edge from \code{equipment} to \code{nursing} implies that \code{nursing} consumes \code{equipment}, but the SQL definitions show that \code{nursing} uses \code{equipment} only to exclude claim lines whose category is equipment. 
+Figure~\ref{fig:strategy-c-sql-edge} shows that the original \code{nursing} SQL anti-joins against \code{equipment}, while the rewrite uses a direct predicate over \code{claims}. This avoids building or scanning \code{equipment} as an exclusion list and removes the anti-join from \code{nursing};  we called this dependency-edge simplification in \S\ref{sec:dependencies-as-signals}.
+
+The graph also exposes downstream demand: after this rewrite, if no remaining edge leaves \code{equipment}, no final output can observe it and the model can be skipped entirely. We referred to this as downstream-aware pruning in \S\ref{sec:dependencies-as-signals}.
 
 \head{Example 3: Refresh + placement}
-The \code{claims\_summary} model in Figure~\ref{fig:strategy-c-graph}(a) combines fast-changing claims with slow-changing reference codes and then applies code-grouping logic after the join. The graph exposes refresh patterns, because \code{claims} and \code{code\_catalog} change at different rates, and operator placement, because the grouping occurs after reference data has been joined into the high-volume claims stream. By exploiting these signals, one can create \code{service\_code\_flags} on the slow reference side and rewrite \code{claims\_summary} to join that precomputed result, as shown in Figure~\ref{fig:strategy-c-graph}(b) and Example 3 of Figure~\ref{fig:strategy-c-sql} (\emph{frequency-aware optimization} and \emph{pipeline-aware work placement}).
+The \code{claims\_summary} model in Figure~\ref{fig:strategy-c-graph}(a) combines fast-changing claims with slow-changing reference codes and then applies code-grouping logic after the join. 
+As Figure~\ref{fig:strategy-c-sql-frequency} shows, \code{group\_code} depends only on the slow-changing \code{code\_catalog}, but the original \code{claims\_summary} evaluates it after joining into the high-volume \code{claims} stream. The recurring DAG exposes source update rates and consumer refresh schedules, so moving \code{group\_code} into \code{service\_code\_flags} lets the grouped lookup be recomputed only when the lookup table changes or consumers need it, while also applying the grouping before the join expands data volume. These are called frequency-aware optimization and pipeline-aware work placement in \S\ref{sec:dependencies-as-signals}.
 
-\subsection{Why Local Rewriting Falls Short}
+\subsection{Why Existing Techniques Fall Short}
 \label{sec:why-different}
 
-The three examples above are not isolated curiosities; they illustrate a general capability gap.
-Single-query rewrite systems~\cite{wetune,rbot} operate within the boundary of one query and cannot restructure across transformation files.
-Multi-query optimization and common subexpression elimination~\cite{sellis1988multiple} share intermediate computations across queries but rely on syntactic matching, so they miss the cross-transformation semantic equivalence in Example~1.
-Materialized view selection~\cite{agrawal2000automated} chooses among existing view candidates and treats update cost as a static parameter rather than as a structural driver of DAG design (Example~3).
-Code clone detection and lineage tools can identify structural similarity or trace data provenance, but they do not perform the optimization itself.
 
-The gap is not that any one of these techniques is poorly designed; it is that none of them targets the setting we are concerned with.
-Optimizing a SQL pipeline DAG requires an optimizer that can combine the six capabilities above: use producer and consumer context, find semantic reuse beyond syntactic overlap, prune work that no downstream output consumes, move expensive work after data-reducing steps, evaluate rewrites together with persistence choices, and account for recurring refresh behavior.
-The remainder of this paper presents an approach that integrates these capabilities into a coherent optimization framework.
+The examples above point to a broader limitation: pipeline rewriting needs information that is distributed across the dependency graph, not only inside the query being rewritten.
+Single-query rewrite systems~\cite{wetune,rbot} operate within the boundary of one query and cannot see the upstream queries that define its inputs or the downstream queries that consume its output.
+Multi-query optimization and common subexpression elimination~\cite{sellis1988multiple} share intermediate computations across queries but rely on syntactic matching, so they miss the cross-query semantic equivalence illustrated in Figure~\ref{fig:strategy-c-sql-reuse}.
+Materialized view selection~\cite{agrawal2000automated} can choose which existing results to persist, but it does not rewrite the DAG to move slow-changing work out of a fast-refresh path, as illustrated in Figure~\ref{fig:strategy-c-sql-frequency}.
+
+
+The gap is not that these techniques are poorly designed; it is that none treats an explicit SQL dependency graph as the unit of rewriting.
+Dependency-aware rewriting must combine capabilities that are usually considered separately:
+use producer and consumer context, find semantic reuse beyond syntactic overlap, prune work that no downstream output consumes, move expensive work after data-reducing steps, evaluate rewrites together with persistence choices, and account for recurring refresh behavior.
+The remainder of this paper presents an approach that integrates these capabilities into a coherent rewriting framework.
 
 
 

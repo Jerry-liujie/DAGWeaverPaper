@@ -41,6 +41,7 @@ Lastly, \emph{Workflow schedulers}~\cite{airflowDags,dagsterAssets,prefectTasks,
 
 
 \ph{Dependencies as Signals} 
+\label{sec:dependencies-as-signals}
 Our key insight is that explicit dependencies are not merely execution constraints; they are  signals that can be leveraged for optimization.
 In particular, a SQL pipeline DAG exposes six kinds of information that are hidden or much harder to recover when queries are optimized independently: \textbf{(1) Edge semantics:} producer-consumer edges reveal how one SQL transformation's output is used by later transformations; \textbf{(2) Cross-graph redundancy:} similar business logic can appear in distant parts of the graph, even when SQL text differs; \textbf{(3) Downstream demand:} downstream dependencies reveal which columns, joins, filters, and intermediate results can affect final outputs; \textbf{(4) Operator placement:} the graph reveals where expensive operations occur relative to data-reducing filters, projections, joins, and aggregations; 
 \textbf{(5) Rewrite-persistence coupling:} unlike single-query rewriting, which is constrained to equivalent rewrites that are cheaper in isolation, pipeline rewriting can consider alternatives that produce additional reusable outputs and are therefore locally more expensive, as long as those outputs are materialized once and reused by enough downstream consumers; and \textbf{(6) Refresh patterns:} schedules and source update rates reveal how often inputs change and outputs are consumed. 
