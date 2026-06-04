@@ -26,7 +26,11 @@ We evaluate on two real dbt projects. \emph{Tuva} is an open-source dbt package 
 
 \head{Testbed}
 Experiments run on BigQuery with a 100-slot reservation on the Standard edition under capacity-based pricing.
-\tool{} is not specific to BigQuery: it optimizes SQL pipelines in general, and we use BigQuery because our open-source workloads are built on them. We report slot-time as the primary cost metric, since it is the billing unit under capacity pricing, and elapsed time as a secondary latency metric. Each reported number is the median of three runs. To simulate realistic production schedules, we use three frequency profiles per project that assign root and leaf models to hourly, daily, or weekly cadences, with interior models derived by propagation. \linc{How these frequencies are assigned within roots or leaves? Like which model is weekly and which model is dayly? just random?} Table~\ref{tab:freq-profiles} summarizes the average cadence mix per project; all frequency-weighted results in this section are averaged across the three profiles.
+\tool{} is not specific to BigQuery: it optimizes SQL pipelines in general, and we use BigQuery because our open-source workloads are built on them. We report slot-time as the primary cost metric, since it is the billing unit under capacity pricing, and elapsed time as a secondary latency metric. Each reported number is the median of three runs. To simulate realistic production schedules, we use three frequency profiles per project that assign root and leaf models to hourly, daily, or weekly cadences, with interior models derived by propagation. \linc{How these frequencies are assigned within roots or leaves? Like which model is weekly and which model is dayly? just random?} \jie{see below} Within the root and leaf sets, cadences are assigned at random, with
+leaves skewed faster than roots, mirroring production schedules, which
+are driven by consumer demand at the sinks rather than the true update
+rate at the sources. This mismatch is exactly what the frequency
+dimension exploits. Table~\ref{tab:freq-profiles} summarizes the average cadence mix per project; all frequency-weighted results in this section are averaged across the three profiles.
 
 % \begin{table}[tb]
 % \centering
@@ -82,7 +86,10 @@ We compare against three baselines spanning the design space of SQL pipeline opt
 
 \emph{GenRewrite}~\cite{genrewrite} is an LLM-based per-query rewriter. It introduces natural-language rewrite rules that transfer knowledge across queries and a counterexample-guided loop that iteratively corrects syntactic and semantic errors in the rewrites. Like LearnedRewrite, it operates one model at a time.
 
-\emph{CSE} is a cross-model common subexpression baseline~\cite{scopeCSE}, \linc{broken sitation.} \linc{citation still broken when I compile it...} which detects subexpressions shared across a SCOPE script's stages and materializes each once, re-optimized at the query optimizer's memo. The memo step is not portable, since managed warehouses do not expose their optimizer's internal state to external tools. We adapt the approach by detecting shared subexpressions at the AST level and selecting which to materialize heuristically. CSE is the strongest available position for a syntactic, cross-model approach on a managed warehouse. \linc{is ``strongest available'' the correct way to phrase this? ``strongest'' according to what standard?}
+\emph{CSE} is a cross-model common subexpression baseline~\cite{scopeCSE}, \linc{broken sitation.} \linc{citation still broken when I compile it...} \jie{works on my side} which detects subexpressions shared across a SCOPE script's stages and materializes each once, re-optimized at the query optimizer's memo. The memo step is not portable, since managed warehouses do not expose their optimizer's internal state to external tools. We adapt the approach by detecting shared subexpressions at the AST level and selecting which to materialize heuristically. \linc{is ``strongest available'' the correct way to phrase this? ``strongest'' according to what standard?} \jie{see below} It is the only baseline
+in our comparison with cross-model scope, and represents the best a purely
+syntactic method can achieve on a managed warehouse without access to
+optimizer internals.
 
 
 
