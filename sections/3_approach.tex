@@ -64,7 +64,7 @@
 \node[freqstage, below=2mm of s2.south,
       minimum width=125mm, minimum height=10mm,
       anchor=north] (fband)
-  at ($(s1.south west)!0.5!(s4.south east) + (0,-8mm)$)
+  at ($(s1.south west)!0.5!(s4.south east) + (0,-5mm)$)
   {Frequency profile\\\scriptsize(declared schedule + source update rates,
    propagated through DAG; Section~\ref{sec:frequency})};
 
@@ -76,26 +76,27 @@
 \draw[freqarrow] (fband.north -| s4.south) -- (s4.south)
   node[arrowlabel, right=1pt, fill=white]{\scriptsize Layer 2: reschedule};
 
-% Final tuning loop-back: after selection, retune materialization on combined DAG
-\draw[arrow, dashed]
-  (s4.north) to[out=120, in=60]
-  node[arrowlabel, above, fill=white]{final retune}
-  (s3.north);
+% Final tuning loop-back: flat elbow (saves the vertical space the arc used)
+\coordinate (rtlvl) at ($(s4.north)+(0,3.2mm)$);
+\draw[arrow, dashed] (s4.north) -- (s4.north|-rtlvl)
+  -- node[arrowlabel, above, fill=white]{final retune} (s3.north|-rtlvl)
+  -- (s3.north);
 
 \end{tikzpicture}%
 }
-\caption{End-to-end pipeline of \tool. The top row shows the four main stages and the artifacts that flow between them; after global selection, a final materialization pass retunes the combined DAG. The dashed band underneath is the frequency dimension (Section~\ref{sec:frequency}): a single frequency profile feeds three of the four stages, contributing structural splitting hints, cost weights for materialization tuning, and schedule corrections at selection. \linc{refrence the sections explicitly (e.g., Section 3.1) in the figure instead of using \S, since we use the full reference throughout the paper.}\jie{Fixed, see above figure}}
+\caption{End-to-end pipeline of \tool. The top row shows the four main stages and the artifacts that flow between them; after global selection, a final materialization pass retunes the combined DAG. The dashed band underneath is the frequency dimension (Section~\ref{sec:frequency}): a single frequency profile feeds three of the four stages, contributing structural splitting hints, cost weights for materialization tuning, and schedule corrections at selection. }
 \label{fig:pipeline}
 \end{figure*}
 
-\linc{IMPORTANT: We need to double check all the references to the ``opportunites'' in this section. It seems that Barzan has removed the numbered opportunites in Section 2.2, but we still have the six ``optimizations''in Section 1. So we can probably just reference these \textbf{optimizations} by number from Section 1. But double check everything to make sure that the numbers are consistent.}
-\jie{Fixed, several revisions have been implemented throughout section 3.}
+%\linc{IMPORTANT: We need to double check all the references to the ``opportunites'' in this section. It seems that Barzan has removed the numbered opportunites in Section 2.2, but we still have the six ``optimizations''in Section 1. So we can probably just reference these \textbf{optimizations} by number from Section 1. But double check everything to make sure that the numbers are consistent.}
+%\jie{Fixed, several revisions have been implemented throughout section 3.}
 
 
 %\linc{Okay in general, I think this section has way too many implementation details and less intuitive lessons. The purpose of a paper is not to document every details of the implementation so that others will recreate every single step. You'll have your code released and they can reference your code anyway. Rather, the purpose is do convery what are the key technical challenges to solve this problem, (intuitively) what are our solutions to solve these challenges and why we choose these solutions, and what lessons did we learn. Implementaiton details are helpful only if we have the space and if that supports our argument for the solution. But having too many can be distracting. I also think having 5 subsections (components) are a bit too many. I would suggest having only 3-4 subsections. (I think earlier you wrote there are 3 optimization dimensions? That might be a good breakdown for the subsections. It seems that in the ablation study you only categorize three optimizations anyway.) And within each subsection, you start with what technical challenges you're going to solve (and why such challenges exist in our problem), and intuitively how your solution works (and why it solves the challenges). A figure illustrating the sollution would be a plus. Then, you go into a little bit of details to just have the audience have a slighly deeper understanding. You can take a look at other papers (or even your previous papers) to see how long this should be. Readers/Reviewers won't appreciate if you add too many details and they couldn't easily get the big picture.}
 
 \tool{} optimizes a SQL pipeline DAG along three interacting dimensions: graph refactoring, materialization, and refresh frequency.
 Each dimension carries out a group of the six optimizations enumerated in Table~\ref{tab:dependency-signals}: refactoring restructures the DAG to share or remove work (optimizations 1--4), materialization weighs each rewrite against its persistence cost (optimization 5) and composes the surviving rewrites into a globally compatible set, and frequency aligns each node's execution rate with how often its inputs change (optimization 6). 
+% \linc{If I remember correctly, Table 1 is just used for us to reference internally to make the terminology consistent, and we'll delete that eventually? If you're unsure, you can probably coordinate with Barzan.}
 These dimensions are coupled: the best choice along one depends on the others, so they should not be optimized independently. We quantify these interactions with an ablation study in Section~\ref{sec:eval-attribution}.
 
 % The benefit of a refactoring depends on which nodes are materialized, the best materialization configuration depends on the structure of the DAG, and both depend on how often each node executes. A pipeline with hundreds or thousands of models admits an enormous space of candidate refactorings, materialization assignments, and refresh schedules; exhaustive search is infeasible, and optimizing the three dimensions in separate passes misses these interactions and produces decisions that conflict at the boundaries.
@@ -148,7 +149,8 @@ Candidate identification finds where in the DAG the refactoring optimizations 1-
 The analysis must decide when two models perform the same expensive work, and the natural ways of testing for this fall short.
 For example, matching on SQL text fails as soon as the same logic is written differently. Matching on plan structure goes further—multi-query optimization and view-matching already see through join order, predicate order, and aliasing—but it reasons about one compiled query at a time and treats a referenced model as an opaque input.
 Therefore, it cannot recognize work shared across model boundaries. Figure 7 shows the problem: Models A and B compute the same join, but Model A filters its input inline while Model B reads the already-filtered input from a sibling model it references. On the compiled SQL, a plan-subtree matcher therefore sees two unrelated trees over different tables.
-DAGSmith instead matches on the operation each model computes through dataflow analysis, resolving references so that a model boundary no longer hides shared work, and reduces the two to a single reuse candidate—which the LLM and a later equivalence check confirm is safe to share. Two analyses build on this: reuse finds repeated expensive work to share (optimization 2), and prune finds work that no downstream model consumes or that runs too early (optimizations 1, 3, and 4). Only the highest-scoring regions are passed to the LLM.
+
+To address such challenges, DAGSmith matches on the operation each model computes through dataflow analysis, resolving references so that a model boundary no longer hides shared work, and reduces the two to a single reuse candidate—which the LLM and a later equivalence check confirm is safe to share. Two analyses build on this: reuse finds repeated expensive work to share (optimization 2), and prune finds work that no downstream model consumes or that runs too early (optimizations 1, 3, and 4). Only the highest-scoring regions are passed to the LLM.
 
 %At its core the analysis must decide when two models do the same expensive work, and the obvious tests miss real cases. Matching SQL text fails on any rephrasing. Matching plan structure is stronger, since multi-query optimization and view-matching already handle join order, predicate order, and aliasing, but it is keyed on the shape of one compiled query and treats a referenced model as an opaque input, so it misses work shared across model boundaries. In Figure~\ref{fig:dataflow-grouping}, Models A and B compute the same join, but Model A filters its input inline while Model B reads the already-filtered input from a sibling model it references, so on the compiled SQL a plan-subtree matcher sees two different trees over different tables.
 %\tool{} instead matches on the operation each model computes, resolving references so that a model boundary does not hide shared work, and reduces the two to a single reuse candidate that the LLM and an equivalence check later confirm is safe to share. Two analyses work this way: \emph{reuse} finds repeated expensive work to share (opportunity~(2)), and \emph{prune} finds work that no downstream model consumes or that runs too early (opportunities~(1), (3), and~(4)). Only the highest-scoring regions go to the LLM.
@@ -192,11 +194,7 @@ Reuse analysis summarizes each model's dataflow representation by a \emph{signat
 Prune analysis targets joins in two forms. A \emph{redundant} join produces a result no downstream model consumes, confirmed by tracing column lineage from the leaf models, and can be removed outright or, when it is a semi-join whose filter is already derivable from the probed relation, collapsed to a predicate. A \emph{mistimed} join is correct but computed too early, inflating an expensive downstream operation whose result does not depend on it; pushing it past that operation avoids carrying its product through the work. Both targets are different from local dead-code elimination in scope: whether a join's result is used, or used too soon, is a fact about the rest of the pipeline that a single-query rewriter cannot see.
 
 \head{From candidates to subgraphs}
-\linc{How the groups are ranked? I.e., how do you decide the score? I think we need one sentence about it (doesn't need to be long).} \jie{Fixed}
-Both analyses produce a ranked stream of candidate model groups, scored by the same simple heuristic. The score multiplies a weight that counts the group's expensive operators (joins and group-bys) by the number of models that benefit: those that share the computation for reuse, and the downstream models relieved of it for prune. \tool{} processes the groups from the highest score down. For each, it extracts a subgraph of the candidate models and their immediate (one-hop) upstream parents, leaving out downstream consumers and siblings; 
-\linc{Just need a few words about how the contenxt is extracted. 1-hop models? 2-hop? Etc.}
-\jie{Fixed}
-the one-hop parents supply the inputs the next stage reasons over, while each candidate's output contract to consumers outside the subgraph stays fixed (Section~\ref{sec:llm-refactoring}). Subgraphs that exceed a node-count cap are skipped. The next subsection describes how the LLM turns these subgraphs into concrete refactorings.
+Both analyses produce a ranked stream of candidate model groups, scored by the same simple heuristic. The score multiplies a weight that counts the group's expensive operators (joins and group-bys) by the number of models that benefit: those that share the computation for reuse, and the downstream models relieved of it for pruning. \tool{} processes the groups from the highest score down. For each, it extracts a subgraph of the candidate models and their immediate (one-hop) upstream parents, leaving out downstream consumers and siblings; the one-hop parents supply the inputs the next stage reasons over, while each candidate's output contract to consumers outside the subgraph stays fixed (Section~\ref{sec:llm-refactoring}). Subgraphs that exceed a node-count cap are skipped. The next subsection describes how the LLM turns these subgraphs into concrete refactorings.
 
 
 
@@ -204,19 +202,63 @@ the one-hop parents supply the inputs the next stage reasons over, while each ca
 \label{sec:llm-refactoring}
 
 %\linc{Well, why do we want to use an LLM to do this in the first place? We either have to establish this earlier or justify it here.}
-This stage produces the refactorings that realize optimizations 1--4 of Table~\ref{tab:dependency-signals}. As motivated in the overview, producing these cross-boundary, semantic rewrites is a reasoning task rather than a pattern-matching one, which is why \tool{} uses an LLM rather than a fixed rule set. But asking an LLM to rewrite SQL that will run against a production warehouse raises three problems: the rewrite may be \emph{slower} than the original, may be \emph{incorrect}, or may be \emph{too expensive to generate} when a region contains many models.
+This stage produces the refactorings that realize optimizations 1--4 of Table~\ref{tab:dependency-signals}. As motivated in the overview, producing these cross-boundary, semantic rewrites is a reasoning task rather than a pattern-matching one, which is why \tool{} uses a state-of-the-art frontier LLM from a commercial provider rather than a fixed rule set.
+% \linc{Say what kind of model this is (i.e., SOTA frontier models from commercial providers, etc.)} 
+But asking an LLM to rewrite SQL that will run against a production warehouse raises three problems: the rewrite may be \emph{slower} than the original, may be \emph{incorrect}, or may be \emph{too expensive to generate} when a region contains many models.
 
-%The challenge for this stage is to obtain useful rewrites while controlling all three risks.
 
-%\linc{Similarly, I think one paragraph to discuss intuitively how your approach works and what it achieves (better with a figure) can be valuable. The details can be reduce.}
-\tool{} addresses all three by splitting rewriting into four roles, each a separate call with one job:
-a \emph{proposer} reads the region and lists candidate optimizations, an adversarial \emph{critic} rejects proposals that would slow the pipeline or silently change its results, a \emph{rewriter} turns the survivors into concrete SQL, and a \emph{verifier} tests each rewrite against the warehouse's real data before it is trusted. Separating proposal from criticism keeps a single prompt from having to be both creative and skeptical, and grounding acceptance in real data rather than in the model's own assurance is what makes adopting LLM-written SQL safe. 
+
+
+
+\begin{figure}[t]
+\centering
+\resizebox{\columnwidth}{!}{%
+\begin{tikzpicture}[
+    font=\small,
+    node distance=6mm and 8mm,
+    rolebase/.style={draw, rounded corners=2.5pt, very thick,
+        minimum height=13mm, minimum width=33mm, align=center, inner sep=3pt, font=\small},
+    gen/.style={rolebase, fill=blue!7,   draw=blue!55!black},
+    chk/.style={rolebase, fill=orange!12, draw=orange!78!black},
+    io/.style={align=center, font=\itshape, text=black!65},
+    arrow/.style={-{Stealth[length=3mm]}, very thick, draw=black!75},
+    backarrow/.style={-{Stealth[length=3mm]}, very thick, dashed, draw=red!60!black},
+]
+\node[io] (in) {subgraph\\\footnotesize(SQL +\\\footnotesize dependencies)};
+\node[gen, right=of in]   (prop) {{\color{blue!55!black}\textbf{Proposer}}\\[2pt]\footnotesize lists\\\footnotesize opportunities};
+\node[chk, right=of prop] (crit) {{\color{orange!78!black}\textbf{Critic}}\\[2pt]\footnotesize filters slow or\\\footnotesize unsafe proposals};
+\node[gen, below=of crit] (rew)  {{\color{blue!55!black}\textbf{Rewriter}}\\[2pt]\footnotesize emits\\\footnotesize refactored SQL};
+\node[chk, left=of rew]   (ver)  {{\color{orange!78!black}\textbf{Verifier}}\\[2pt]\footnotesize SQL checks\\\footnotesize vs.\ real data};
+\node[io, left=of ver] (out) {verified\\candidate};
+\draw[arrow] (in)   -- (prop);
+\draw[arrow] (prop) -- (crit);
+\draw[arrow] (crit) -- (rew);
+\draw[arrow] (rew)  -- (ver);
+\draw[arrow] (ver)  -- (out);
+\draw[backarrow] (ver.south) -- ([yshift=-5mm]ver.south) -| (rew.south);
+\node[font=\footnotesize, anchor=north, fill=white, inner sep=1.5pt]
+  at ($(ver.south)!0.5!(rew.south) + (0,-5mm)$) {\color{red!60!black}fail: violated invariant};
+\end{tikzpicture}%
+}
+\caption{\tool{}'s agentic refactoring loop. Four agents each fill one role: a \emph{proposer} and \emph{rewriter} (blue) generate, while a \emph{critic} and \emph{verifier} (amber) scrutinize. A failed equivalence check returns the violated invariant to the rewriter, which retries or reverts. }
+\label{fig:llm-refactoring}
+\end{figure}
+
+% \linc{Fonts are too small. Need to reference the figure in Section 3.2 when we overview the solution. Probably also want to change the color/shape a bit or add some symbols. Right now, the figure looks a bit plain.}
+
+
+
+
+% \linc{Maybe we can say we use an agentic framework to address this with four separate agents? That might be a bit better framing I feel like.}
+\tool{} addresses all three with an agentic framework of four agents, each filling a single role  (Figure~\ref{fig:llm-refactoring}): a \emph{proposer} reads the region and lists candidate optimizations, an adversarial \emph{critic} rejects proposals that would slow the pipeline or silently change its results, a \emph{rewriter} turns the survivors into concrete SQL, and a \emph{verifier} tests each rewrite against the warehouse's real data before it is trusted. Separating proposal from criticism keeps a single prompt from having to be both creative and skeptical, and grounding acceptance in real data rather than in the model's own assurance is what makes adopting LLM-written SQL safe.
+
+
 
 \head{Proposal}
 The first call ingests the subgraph's SQL and dependency edges and produces a domain-level reading of the region: a short semantic summary of each model and the end-to-end business question the subgraph answers. This reading is what lets later stages recognize equivalent computations written in dissimilar SQL. 
 The call then outputs a list of \emph{opportunities}, each describing the work it would remove or shrink and how—proposals to be rewritten and checked later, not finished rewrites.
 
-\head{Filtering} A second call acts as an adversarial critic, going through the proposals and trying to break them. We keep this separate from proposal on purpose: a single prompt asked to both propose and doubt does neither well, and in practice the proposing voice often wins out. The critic looks for two failure modes. The first is a slowdown—a proposal that looks like reuse-driven savings but adds a write and a scan without cutting downstream work. The second is a correctness trap, shown in Figure~\ref{fig:critic-catch}: the proposal drops a join by reading a tag from a sibling deduplicated to one row per item, silently discarding the secondary tags the original join admitted. The critic returns one of three verdicts—\emph{approve}, \emph{reject}, or \emph{conditional}—where a conditional verdict records a data property the rewrite must satisfy, carried into the next stage.
+\head{Filtering} A second call acts as an adversarial critic, going through the proposals and trying to break them. We keep this separate from proposal on purpose: a single prompt asked to both propose and doubt does neither well, and in practice the proposing voice often wins out. The critic looks for two failure modes. The first is a slowdown—a proposal that looks like reuse-driven savings but adds a write and a scan without cutting downstream work. The second is a correctness trap, of which Figure~\ref{fig:critic-catch} shows one example: the proposal drops a join by reading a tag from a sibling deduplicated to one row per item, silently discarding the secondary tags the original join admitted. The critic returns one of three verdicts—\emph{approve}, \emph{reject}, or \emph{conditional}—where a conditional verdict records a data property the rewrite must satisfy, carried into the next stage.
 
 \begin{figure}[!htbp]
 \begin{minipage}[t]{0.48\linewidth}
@@ -274,25 +316,71 @@ A subgraph often contains a \emph{family} of near-duplicate models that apply th
 \subsection{Materialization Tuning}
 \label{sec:materialization}
 
-This stage realizes optimization 5 of Table~\ref{tab:dependency-signals}, rewrite-materialization co-optimization, and additionally composes overlapping rewrite candidates into a globally compatible set. \linc{what is the second opportunity? Does seen to have this term in Section 2.2.} \jie{no longer applicable}
-A refactoring's benefit cannot be determined in isolation: whether it helps depends on which of its nodes are stored as tables and which are inlined as views, and the best choice differs from one candidate to the next, so a candidate must be scored together with its own best materialization. Even then, a second challenge remains: candidates overlap and cannot all be adopted at once, so they must be composed into a compatible set. This subsection addresses both—tuning one candidate's materialization, then selecting a compatible set.
+
+
+\begin{figure}[t]
+\centering
+\resizebox{\columnwidth}{!}{%
+\begin{tikzpicture}[
+    font=\small, node distance=8mm and 8mm,
+    stagebase/.style={draw, rounded corners=2.5pt, very thick,
+        minimum height=14mm, minimum width=34mm, align=center, inner sep=3pt, font=\small},
+    tuneS/.style={stagebase, fill=blue!7,   draw=blue!55!black},
+    selS/.style={stagebase, fill=orange!12, draw=orange!78!black},
+    io/.style={align=center, font=\itshape, text=black!65},
+    arrow/.style={-{Stealth[length=3mm]}, very thick, draw=black!75},
+    looparrow/.style={-{Stealth[length=2.4mm]}, thick, draw=blue!55!black},
+    albl/.style={font=\footnotesize, fill=white, inner sep=1.5pt},
+]
+\node[io] (in) {verified\\candidates $\{c\}$};
+\node[tuneS, right=of in] (tune) {{\color{blue!55!black}\textbf{Per-candidate tuning}}\\[2pt]\footnotesize learned cost model\\\footnotesize $+$ ILP search};
+\node[selS, right=of tune] (sel) {{\color{orange!78!black}\textbf{Global selection}}\\[2pt]\footnotesize ILP: max $\sum\Delta_c$,\\\footnotesize conflict-free, $\le\!1$/region};
+\node[tuneS, below=of tune] (re) {{\color{blue!55!black}\textbf{Final retune}}\\[2pt]\footnotesize combined DAG};
+\node[io, below=of in] (out) {optimized\\DAG $P^\star$};
+\draw[arrow] (in)   -- (tune);
+\draw[arrow] (tune) -- node[albl,above]{$\Delta_c$} (sel);
+\draw[arrow] (sel.south) |- (re.east);
+\draw[arrow] (re)   -- (out);
+% elbow self-loop over the tuning box: iterative local linearization
+\draw[looparrow] ([xshift=-8mm]tune.north east) -- ++(0,4.5mm) -| ([xshift=8mm]tune.north west);
+\node[font=\footnotesize, anchor=south, inner sep=1pt, text=blue!55!black]
+  at ([yshift=6.8mm]tune.north) {iterative local linearization};
+\end{tikzpicture}%
+}
+\caption{\tool{}'s materialization tuning and global selection.}
+\label{fig:materialization}
+\end{figure}
+
+% \linc{Fonts are too small. Need to reference the figure in Section 3.3 when we overview the solution. Probably also want to change the color/shape a bit or add some symbols. Right now, the figure looks a bit plain.}
+
+This stage realizes optimization 5 of Table~\ref{tab:dependency-signals}, rewrite-materialization co-optimization, and additionally composes overlapping rewrite candidates into a globally compatible set. 
+A refactoring's benefit cannot be determined in isolation: whether it helps depends on which of its nodes are stored as tables and which are inlined as views, and the best choice differs from one candidate to the next, so a candidate must be scored together with its own best materialization. Even then, a second challenge remains: candidates overlap and cannot all be adopted at once, so they must be composed into a compatible set. This subsection addresses both (Figure~\ref{fig:materialization}): tuning one candidate's materialization, then selecting a compatible set.
 
 
 
 
 
 \head{Tuning one candidate}
-To score a candidate, \tool{} must first find its best materialization: the assignment of each node to a table or a view that makes the whole pipeline cheapest to run, where \emph{cost} is the total slot time of one execution. That lowest cost becomes the candidate's score. Finding it is hard for two reasons, which \tool{} handles separately: a candidate cannot be run under every assignment to measure its cost, so a learned cost model predicts the cost from static SQL; and the assignments are too many to try one by one, so a successive-approximation search, solving a small integer program at each step, finds a good one. \linc{What does this ``cost'' refer to? Where is it used? In general, I couldn't really follow the discussion here... I think we're missing the intuitive discussion (2-3 sentences) on at a high-level how our method works and why it's better. We use this learned cost model, but why? What does it do? Why it's better? We use this linear programming for each, but why? What does it do? Why it's better? Overall, what's our key methodology? You just need a few sentences to establish these, but without them, it's very difficult for me to follow the text below and understand why I'm reading it. You added this for Section 3.1 and 3.2, which helped a lot.} \jie{added an overview paragraph above}
+To score a candidate, \tool{} must find its best materialization: the assignment of each node to a table or a view that makes the whole pipeline cheapest to run, where \emph{cost} is the total slot time of one execution. That lowest cost becomes the candidate's score.
  
-What makes the assignment coupled rather than node-local is how the two choices behave. A table is a barrier: it is built once, and its consumers read its stored rows. A view is not: reading a view re-executes its SQL, expanding recursively through any view-parent until it reaches a table or source. Flipping a node from table to view therefore drops its own build cost but pushes its work, together with the view chain above it, into every consumer that reads it, once per consumer execution. A node's cost thus depends on how its ancestors are materialized, so the choices are coupled and total cost is not a sum of per-node costs.
+Finding that assignment is hard because the table-or-view choice is not node-local. A table is a barrier: it is built once, and its consumers read its stored rows. A view is not: reading a view re-executes its SQL, expanding recursively through any view-parent until it reaches a table or source. Flipping a node from a table to a view therefore drops its own build cost but pushes its work, together with the view chain above it, into every consumer that reads it, once per consumer execution. A node's cost thus depends on how its ancestors are materialized, so the choices are coupled and total cost is not a sum of per-node costs. 
+% \linc{This paragraph seems a bit abrupt. It doesn't connect either the paragraph above or below. What's the point of this paragraph? How is it relevant to the paragraph above and below?}
  
-\tool{} confronts the two difficulties in turn. \linc{Are these two ``costs'' the same as the ``cost'' above? I'm confused...} \jie{Removed ambiguous description}  The first is evaluation: scoring an assignment would normally mean executing the pipeline, so \tool{} instead prices it with a learned cost model. Two robust (Huber) regressors, fit on instrumented runs of the original pipeline, predict each node's output cardinality and its slot time from structural features parsed off its compiled SQL, such as counts of joins and their keys, predicates by kind, group-bys, distinct operations, unions, and scans, with window, aggregation, and order-by features added for the slot-time predictor, each conditioned on the predicted cardinalities of the node's parents. Because a view's work folds into whoever reads it, these features are accumulated along each view chain, so a node is priced on the work it performs under the assignment in question; new nodes a refactoring introduces, having no measurements of their own, are predicted the same way from their SQL and their parents' cardinality. The model only has to rank assignments within one project rather than predict absolute runtimes, so directional accuracy is enough, and the Huber loss keeps a handful of very large queries from dominating the fit. \linc{This ``cost model'' part is also a bit vague. What's the input of this model and how do we featurize it? What's the model algorithm (doesn't need the detailed equation, but we don't even now which ML model do we use... It's not going to be super accurate either, right? So what do we do if it's not accurate? We don't need all the details but we need some basic understanding of it.)} \jie{added more details about learned cost model}
+This coupling creates two challenges that \tool{} handles in turn. 
+% \linc{What are the two difficulties? The ``two reasons'' mentioned two paragraphs ago? Or something from the last paragraph?} 
+The first is evaluation: scoring an assignment would normally mean executing the pipeline, so \tool{} instead prices it with a learned cost model. Two robust (Huber~\cite{huber1964robust}) regressors, fit on instrumented runs of the original pipeline, predict each node's output cardinality and its slot time from structural features parsed off its compiled SQL, such as counts of joins and their keys, predicates by kind, group-bys, distinct operations, unions, and scans, with window, aggregation, and order-by features added for the slot-time predictor, each conditioned on the predicted cardinalities of the node's parents. Because a view's work folds into whoever reads it, these features are accumulated along each view chain, so a node is priced on the work it performs under the assignment in question; new nodes a refactoring introduces, having no measurements of their own, are predicted the same way from their SQL and their parents' cardinality. The model only has to rank assignments within one project rather than predict absolute runtimes, so directional accuracy is enough, and the Huber loss keeps a handful of very large queries from dominating the fit.
  
-The second is search: the best assignment must be found among exponentially many. Each of the candidate's $n$ nodes is either a table or a view, giving $2^n$ possible assignments, more than can be scored one by one; and because a node's cost depends on how its ancestors are materialized, the cheapest assignment cannot be assembled node by node either. \linc{What is the goal of the search? Why do we need it? I don't think we have established it...} \jie{Fixed}  \tool{} navigates it with \textbf{iterative local linearization}, a successive-approximation scheme that replaces the true nonlinear cost with a local linear surrogate, solves it, and re-linearizes at the result. Concretely, at iteration $k$, holding the current assignment $t^{(k)}$ fixed, \tool{} uses the cost model to measure two local quantities: a baseline build cost $B^{(k)}_j$ for each node $j$ (its direct parents forced to tables) and an edge-local delta $U^{(k)}_{ij}$, the extra cost at $j$ when only parent $i$ is inlined as a view. Treating these as constants for the iteration, it solves a small ILP for $t^{(k+1)}$:
+The second is search: the best assignment must be found among exponentially many ($2^n$ for a candidate of $n$ nodes), and the coupling above rules out assembling it node by node. \tool{} navigates this with \textbf{iterative local linearization}~\cite{griffith1961slp,palaciosgomez1982slp}, a successive-approximation scheme that replaces the true nonlinear cost with a local linear surrogate, solves it, and re-linearizes at the result. Concretely, at iteration $k$, holding the current assignment $t^{(k)}$ fixed, \tool{} uses the cost model to measure two local quantities: a baseline build cost $B^{(k)}_j$ for each node $j$ (its direct parents forced to tables) and an edge-local delta $U^{(k)}_{ij}$, the extra cost at $j$ when only parent $i$ is inlined as a view. Treating these as constants for the iteration, it solves a small ILP for $t^{(k+1)}$:
 \begin{equation*}
 \min_{t,\,y}\; \sum_{j \in V} t_j\, B^{(k)}_j \;+\; \sum_{i \to j \in E} y_{ij}\, U^{(k)}_{ij}, \qquad \text{s.t.}\quad y_{ij} = (1 - t_i) \wedge t_j,
 \end{equation*}
 where $y_{ij}$ is $1$ exactly when node $j$ is built and reads a view-parent $i$, and a trust-region cap on flips keeps each step where the coefficients hold. Because flipping a node changes the cardinalities its descendants see, $B$ and $U$ are recomputed after each move and the step repeated until the assignment stops changing; an effect the current coefficients miss, such as the cost of also flipping a sibling, then surfaces in the next round. The loop converges to a local optimum rather than a global one, which is safe here. Because the search minimizes cost, a worse assignment can only make a candidate look more expensive than its true best, never cheaper; and a candidate is adopted only when it beats the original DAG, which is tuned by the same procedure and is always available as a fallback. A candidate the search shortchanges therefore loses to the original and is passed over, so imperfect search risks only a missed improvement, never a regression below the original.
+
+
+
+
+
+
 
 
 
@@ -332,7 +420,8 @@ where $y_{ij}$ is $1$ exactly when node $j$ is built and reads a view-parent $i$
 
 
 \head{Selecting a compatible set}
-Tuning leaves each candidate with a single number, its \emph{delta}: how much cheaper the pipeline runs if that one refactoring is applied, with the original and the refactored version each at its own best materialization. \linc{I'm also losing a bit of context here. Why we need this delta? What's its purpose? It's a bit abrupt here.} \jie{Integrate delta description into this paragraph, should be more intuitive} Selection then decides which candidates to adopt. It would take all of them if it could, but two things get in the way. First, refactorings can conflict: two that rewrite, create, or remove the same model cannot both be applied. Second, the LLM sometimes proposes several alternative refactorings for the same region, and at most one of them may be chosen. \tool{} therefore looks for the set of candidates with the largest total delta that has no conflicts and at most one variant per region, a small problem it hands to an off-the-shelf integer-program solver. One correction remains: because each delta was measured with the candidate tuned on its own, the best table-or-view choices for the chosen combination need not match any single candidate's, so \tool{} retunes the combined project one final time.
+Tuning leaves each candidate with a single number, its \emph{delta}: how much cheaper the pipeline runs if that one refactoring is applied, with the original and the refactored version each at its own best materialization. Selection then decides which candidates to adopt. It would take all of them if it could, but two things get in the way. First, refactorings can conflict: two that rewrite, create, or remove the same model cannot both be applied. Second, the LLM sometimes proposes several alternative refactorings for the same region, and at most one of them may be chosen. \tool{} therefore looks for the set of candidates with the largest total delta that has no conflicts and at most one variant per region, a small problem it hands to an off-the-shelf integer-program solver. One correction remains: because each delta was measured with the candidate tuned on its own, the best table-or-view choices for the chosen combination need not match any single candidate's, so \tool{} retunes the combined project one final time, rerunning the same cost-model-guided search used for each candidate, now over the merged DAG with all selected refactorings in place. 
+% \linc{How this ``retune'' is done? Maybe briefly explain this with one/half a sentence.}
 
 
 
