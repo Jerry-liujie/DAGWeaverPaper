@@ -4,12 +4,12 @@
 We evaluate \tool{} on real dbt projects, organized around three questions:
 \begin{enumerate}
     \item How does \tool{} compare to existing baselines for SQL pipeline optimization, and what classes of optimization account for the gap?
-    \item How much does each component of \tool{}'s architecture contribute to the overall gain? We ablate the three \tofix{implementation dimensions} (refactoring, materialization, and frequency) and the dataflow-driven targeting that feeds the LLM stage.
+    \item How much does each component of \tool{}'s architecture contribute to the overall gain? We ablate the three  implementation dimensions  (refactoring, materialization, and frequency) and the dataflow-driven targeting that feeds the LLM stage.
     \item Is the underlying machinery sound and affordable? We measure  the effectiveness of the equivalence-verification loop at catching unsafe rewrites, the LLM cost of running the system end-to-end, and the accuracy of the cost model that drives materialization decisions.
 \end{enumerate}
 
 \head{Summary of results}
-On the open-source Tuva and Stripe dbt projects, \tool{} reduces BigQuery slot-time, the unit billed under capacity pricing, by 51.1\% and 47.4\% to build the pipeline once, and by 67.7\% and 54.8\% in recurring cost averaged across three representative refresh schedules per project. Both figures beat the strongest baseline by a wide margin (on Tuva, 67.7\% against its 37.9\% recurring-cost reduction), because \tool{} reaches cross-model refactoring, materialization revision, and frequency-aware rescheduling that single-query and syntactic cross-model rewriters cannot. An ablation confirms the three \tofix{implementation dimensions} are complementary, and that dataflow-guided targeting spends a fixed LLM budget more effectively than random subgraph selection (51.1\% vs.\ 43.1\% single-run). 
+On the open-source Tuva and Stripe dbt projects, \tool{} reduces BigQuery slot-time, the unit billed under capacity pricing, by 51.1\% and 47.4\% to build the pipeline once, and by 67.7\% and 54.8\% in recurring cost averaged across three representative refresh schedules per project. Both figures beat the strongest baseline by a wide margin (on Tuva, 67.7\% against its 37.9\% recurring-cost reduction), because \tool{} reaches cross-model refactoring, materialization revision, and frequency-aware rescheduling that single-query and syntactic cross-model rewriters cannot. An ablation confirms the three  implementation dimensions are complementary, and that dataflow-guided targeting spends a fixed LLM budget more effectively than random subgraph selection (51.1\% vs.\ 43.1\% single-run). 
 The supporting machinery is sound and affordable (Section 4.4): the verification loop reliably rejects unsafe rewrites, the LLM cost is paid once and amortized over many runs, and the learned cost model is accurate enough for the decisions it drives.
 
 
@@ -62,6 +62,7 @@ dimension exploits. Table~\ref{tab:freq-profiles} summarizes the average cadence
 \begin{table}[tb]
 \centering
 \caption{Frequency profile averages per project. Each row is the fraction of root and leaf models at each cadence, averaged across three profiles.}
+% \inv
 \label{tab:freq-profiles}
 \small
 \begin{tabular}{lrrrrrr}
@@ -74,6 +75,7 @@ Tuva   & 0.18 & 0.57 & 0.25 & 0.07 & 0.20 & 0.73 \\
 Stripe & 0.13 & 0.60 & 0.27 & 0.05 & 0.52 & 0.43 \\
 \bottomrule
 \end{tabular}
+% \inv
 \end{table}
 
 \head{Cost metrics}
@@ -82,7 +84,7 @@ We report two views of cost. \emph{Single-run cost} is the cost of executing the
 \head{Baselines}
 We compare against three baselines spanning the design space of SQL pipeline optimization.
 
-\emph{LearnedRewrite}~\cite{learnedrewrite} is a rule-based per-query rewriter. It applies a portfolio of equivalence-preserving transformations to each model's compiled SQL independently, guided by a learned policy over which rules to apply and in what order. It is competitive on standalone analytical queries but has no view of the surrounding DAG.
+\emph{LearnedRewrite}~\cite{learnedrewrite} is a rule-based per-query rewriter. It applies a portfolio of equivalence-preserving transformations to each compiled SQL independently, guided by a learned policy over which rules to apply and in what order. It is competitive on standalone analytical queries but has no view of the surrounding DAG.
 
 \emph{GenRewrite}~\cite{genrewrite} is an LLM-based per-query rewriter. It introduces natural-language rewrite rules that transfer knowledge across queries and a counterexample-guided loop that iteratively corrects syntactic and semantic errors in the rewrites. Like LearnedRewrite, it operates one model at a time.
 
@@ -106,7 +108,8 @@ Table~\ref{tab:overall} reports each method's improvement over the original proj
 
 \begin{table}[tb]
 \centering
-\caption{Improvement over the original project (\% reduction; higher is better). Medians of three runs on a 100-slot BigQuery reservation.}
+\caption{Improvement over the original project (\% reduction; higher is better). }
+\inv
 \label{tab:overall}
 \small
 \begin{tabular}{lrrrr}
@@ -128,17 +131,19 @@ CSE            & $-3.2$  & $-5.6$  & $-3.1$  & $-0.6$ \\
 \tool{}        & $\mathbf{40.0}$ & $\mathbf{47.4}$ & $\mathbf{36.1}$ & $\mathbf{54.8}$ \\
 \bottomrule
 \end{tabular}
+\inv
 \end{table}
 
 
 Each baseline falls short for a different structural reason. We name the limit in each case, then summarize the classes of optimization that account for the gap above the strongest baseline.
 
-\head{LearnedRewrite: no net improvement on either project} LearnedRewrite applies equivalence-preserving rules independently to each model and therefore cannot reach any of the cross-model optimizations \tofix{identified in Section~\ref{sec:dependencies-as-signals}}, such as non-local semantic reuse and downstream-aware pruning, whose benefit depends on neighboring models. On Tuva, the one rule that fires at scale replaces a post-join \code{SELECT DISTINCT} with a \code{GROUP BY} that pre-deduplicates each join input. When the join key is near-unique, this grouping is nearly free and lets the query skip an expensive \code{DISTINCT} over the wide joined result, making the rewrite faster. When many rows share each key value, the warehouse already runs the original efficiently as a semi-join, and the extra grouping is wasted work that slows the rewrite down. Across the models the rule touches, wins and losses are roughly balanced. On Stripe, which is already hand-factored, LearnedRewrite's rules find little to match and it changes almost nothing. Overall, LearnedRewrite barely changes either project's cost: rule-based per-query rewriting has little left to do once the warehouse planner has already handled the simple per-query cases, and the changes that would actually help these projects span multiple models, which it cannot do.
+\head{LearnedRewrite: no net improvement on either project} LearnedRewrite applies equivalence-preserving rules independently to each model and therefore cannot reach any of the cross-model optimizations identified in Section~\ref{sec:dependencies-as-signals}, such as non-local semantic reuse and downstream-aware pruning, whose benefit depends on neighboring models. On Tuva, the one rule that fires at scale replaces a post-join \code{SELECT DISTINCT} with a \code{GROUP BY} that pre-deduplicates each join input. When the join key is near-unique, this grouping is nearly free and lets the query skip an expensive \code{DISTINCT} over the wide joined result, making the rewrite faster. When many rows share each key value, the warehouse already runs the original efficiently as a semi-join, and the extra grouping is wasted work that slows the rewrite down. Across the models the rule touches, wins and losses are roughly balanced. On Stripe, which is already hand-factored, LearnedRewrite's rules find little to match and it changes almost nothing. Overall, LearnedRewrite barely changes either project's cost: rule-based per-query rewriting has little left to do once the warehouse planner has already handled the simple per-query cases, and the changes that would actually help these projects span multiple models, which it cannot do.
 
 
-\head{GenRewrite: cuts cost within a single model, not across the pipeline} GenRewrite restructures a single model to compute the same result more cheaply, such as replacing an $O(n^2)$ self-join with $O(n)$ window functions, a rewrite current rule-based systems do not support; on Tuva these account for its 17.7\% slot-time reduction. The gain is bounded because every rewrite stays inside a single model: GenRewrite cannot share work across models, change materialization, or skip refreshes. It can also regress, because it rewrites each model on its own. The same expensive self-join appears in several near-identical models. For one, GenRewrite removed it with the $O(n)$ window-function rewrite above; for a near-identical sibling, it instead produced three self-joins that cost more than twice as much as the original. The same good rewrite would have worked for the sibling, but GenRewrite cannot tell that the two are the same and reuse it. On Stripe, already hand-factored, fewer such rewrites are available and the gain is smaller (a 7.1\% slot-time reduction). GenRewrite optimizes each model without seeing the others, which both caps its savings and lets it regress sometimes. 
+\head{GenRewrite: cuts cost within a single model, not across the pipeline} GenRewrite restructures a single model to compute the same result more cheaply, such as replacing an $O(n^2)$ self-join with $O(n)$ window functions, a rewrite current rule-based systems do not support; on Tuva these account for its 17.7\% slot-time reduction. The gain is bounded because every rewrite stays inside a single model: GenRewrite cannot share work across models, change materialization, or skip refreshes. It can also regress, because it rewrites each model on its own. The same expensive self-join appears in several near-identical models. It applied the O(n) rewrite to one model but, on a near-identical sibling, produced three self-joins costing over twice the original, unable to recognize the two as the same. On Stripe, already hand-factored, fewer such rewrites are available and the gain is smaller (a 7.1\% slot-time reduction). 
+% GenRewrite optimizes each model without seeing the others, which both caps its savings and lets it regress sometimes. 
 
-\head{CSE: syntactic matching sees duplication, not equivalence} CSE matches subexpressions across models by their SQL structure, and is the only baseline that works across models. Where the same SQL recurs, it does well: Tuva has a large family of models that each scan and classify the same claims source with nearly identical SQL, and CSE detects the repeated work and runs it once for the whole family, which is most of its 34.6\% Tuva slot-time reduction. Where the SQL differs, it cannot recognize the reuse: six models compute the same per-encounter totals, each from different inputs and in different SQL, and CSE's structural matching does not see them as the same, recovering little of the shared work. On Stripe, CSE slightly increases cost rather than reducing it, the only baseline to do so. Extracting a subexpression into a shared model only pays off when enough consumers reuse it; on Stripe, what CSE extracts is reused by too few consumers to cover the cost of building and scanning it. 
+\head{CSE: syntactic matching sees duplication, not equivalence} CSE matches subexpressions across models by their SQL structure, and is the only baseline that works across models. Where the same SQL recurs, it does well: Tuva has a large family of models that each scan and classify the same claims source with nearly identical SQL, and CSE detects the repeated work and runs it once for the whole family, which is most of its 34.6\% Tuva slot-time reduction. Where the SQL differs, it cannot recognize the reuse: six models compute the same per-encounter totals, each from different inputs and in different SQL, and CSE does not see them as the same, recovering little of the shared work. On Stripe, CSE slightly increases cost rather than reducing it, the only baseline to do so. Extracting a subexpression into a shared model only pays off when enough consumers reuse it; on Stripe, what CSE extracts is reused by too few consumers to cover the cost of building and scanning it. 
 
 
 
@@ -146,7 +151,7 @@ Each baseline falls short for a different structural reason. We name the limit i
 
 \emph{(1) Sharing equivalent work that is written in different SQL.} Models that compute the same thing over different inputs are folded into one shared model, even when their SQL does not match. Take the six encounter models from above, which compute the same per-encounter totals but cannot be matched on SQL text: \tool{} builds one shared rollup that carries the encounter type as a column and replaces all six with short lookups, cutting their slot-time by about 77\%, against CSE's 14\%.  CSE detects that the six share structure but skips them, because their differing encounter-type literals leave the SQL not byte-identical; the equivalence is clear only once the LLM reads what each model computes.
 
-\emph{(2) Replacing repeated wide-table joins with a narrow shared intermediate.} In one Tuva consumer, a union of 32 branches, seven of them each join a different encounter model to the same wide claim-line staging table only to read two of its columns. \tool{} materializes those two columns once as a narrow intermediate and points all seven joins at it, cutting the consumer's slot-time by about 74\%. The saving is not from scanning less data: the warehouse already prunes the unused columns, and the rewrite even processes slightly more bytes. It comes from the joins, since probing a two-column intermediate builds a far smaller hash table than probing the wide staging table. CSE cannot find this, because each branch joins a different upstream model and no two branches are the same SQL fragment to match.
+\emph{(2) Replacing repeated wide-table joins with a narrow shared intermediate.} In one Tuva consumer, a union of 32 branches, seven of them each join a different encounter model to the same wide claim-line staging table only to read two of its columns. \tool{} materializes those two columns once as a narrow intermediate and points all seven joins at it, cutting the consumer's slot-time by about 74\%. The saving comes from the joins, not the scan: probing a two-column intermediate builds a far smaller hash table than the wide staging table (the warehouse already prunes unused columns). CSE cannot find this, because each branch joins a different upstream model and no two branches are the same SQL fragment to match.
 
 \emph{(3) Storing a staging chain as views so the planner can optimize across it.} A staging model stored as a table is built in full and read back as a fixed result the planner cannot optimize across. Stored as a view, it is just SQL the planner folds into the query that reads it, letting it push that query's filters down to the staging's sources and drop intermediate work the query never uses. \tool{} treats this table-or-view choice as something to tune. On Stripe, switching the fifteen staging models behind a wide reporting model from tables to views, with no change to any SQL, cut the data it processes by about a third and its slot-time by about 60\%. Materializing each staging as a table seems like it should help by computing it once, but a table is built in full before the reporting query's filters can apply, leaving the planner nothing to trim; as views, those filters reach the sources, and the whole query is optimized at once. The table-or-view choice is a configuration setting, not part of the SQL; a tool that only rewrites compiled SQL never sees it.
 
@@ -203,7 +208,7 @@ The two projects exercise these patterns in different proportions: Tuva's gap ab
 \label{sec:eval-attribution}
 
 Section~\ref{sec:eval-baselines} described the \emph{classes of optimization} responsible for \tool{}'s gap above the baselines. This subsection asks how much each of \tool{}'s own architectural components contributes and how they interact.
-We ablate along two axes: the three \tofix{implementation dimensions} of LLM refactoring (R; Section~\ref{sec:llm-refactoring}), materialization tuning (M; Section~\ref{sec:materialization}), and frequency optimization (F; Section~\ref{sec:frequency}); and the dataflow analysis that targets the LLM stage (Section~\ref{sec:candidate-identification}). We ablate on Tuva alone, since it is the larger and more structurally varied project and exercises all three dimensions meaningfully, whereas on the smaller Stripe project, attributing gains to individual components is unreliable. 
+We ablate along two axes: the three implementation dimensions of LLM refactoring (R; Section~\ref{sec:llm-refactoring}), materialization tuning (M; Section~\ref{sec:materialization}), and frequency optimization (F; Section~\ref{sec:frequency}); and the dataflow analysis that targets the LLM stage (Section~\ref{sec:candidate-identification}). We ablate on Tuva alone, since it is the larger and more structurally varied project and exercises all three dimensions meaningfully, whereas on the smaller Stripe project, attributing gains to individual components is unreliable. 
 
 \subsubsection{Three Optimization Dimensions}
 \label{sec:eval-ablation-rmf}
@@ -213,6 +218,7 @@ Table~\ref{tab:ablation-rmf} reports the improvement of each subset of $\{R, M, 
 \begin{table}[tb]
 \centering
 \caption{Tuva: dimension ablation (\% reduction over the original project, averaged across the three Tuva profiles in Table~\ref{tab:freq-profiles}). R = refactoring, M = materialization tuning, F = frequency optimization. Bold marks the best variant in each column. }
+\inv
 \label{tab:ablation-rmf}
 \small
 \begin{tabular}{lrr}
@@ -228,9 +234,11 @@ R + M            & $\mathbf{43.1}$          & $54.7$          \\
 R + M + F (full) & $42.6$ & $\mathbf{67.7}$ \\
 \bottomrule
 \end{tabular}
+\inv
 \end{table}
 
-The numerics admit four observations, each reflecting a property of how the dimensions are designed to interact.
+% The numerics admit four observations:
+% , each reflecting a property of how the dimensions are designed to interact.
 
 \head{Refactoring and materialization mostly remove work parallel to the critical path}  Recall that slot measures the total CPU-time the project consumes, while elapsed measures wall-clock time from the first model to the last. For every variant that includes refactoring or materialization, the slot reduction exceeds the elapsed reduction (R-only, for instance, cuts slot by 49.1\% but elapsed by 40.0\%), because \tool{} removes work that runs parallel to the critical path more readily than work on it: consolidating many sibling models into one shared intermediate saves slot proportional to the number of siblings but shortens elapsed only by the slowest sibling's share. Frequency optimization is the exception, cutting elapsed and slot by comparable amounts (13.2\% vs.\ 11.0\%), because it removes whole scheduled executions rather than parallel work. The same mechanism explains the full pipeline: adding F on top of R+M raises the slot reduction sharply (54.7\% to 67.7\%) while elapsed is essentially unchanged (43.1\% to 42.6\%, a difference within run-to-run noise), because the redundant executions F eliminates lie off the critical path. F thus lowers billed cost without affecting wall-clock latency, which is exactly its intended effect.
 
@@ -238,9 +246,12 @@ The numerics admit four observations, each reflecting a property of how the dime
 
 % \head{Slot reductions track total CPU work, elapsed tracks the critical path} \linc{The paragraph head should summarize what we have learned about your approach (or different components), instead of which metrics track which.} Recall that slot measures the total CPU-time the project consumes; elapsed measures the wall-clock time from first model to last. For every variant that includes refactoring or materialization, the slot reduction exceeds the elapsed reduction, because \tool{} removes work parallel to the critical path more aggressively than work on it: consolidating many sibling models into one shared intermediate saves slot proportional to the sibling count but saves elapsed only the slowest sibling's share. The gap is largest for R-only (49.1\% slot vs.\ 40.0\% elapsed). Frequency optimization is the exception, cutting elapsed and slot by comparable amounts (13.2\% vs.\ 11.0\%) because it removes whole scheduled executions rather than parallel work. This is why the full pipeline holds the best slot number but not the best elapsed: on top of R+M, F adds heavily to slot (54.7\% to 67.7\%) by removing off-critical-path runs while leaving elapsed flat (43.1\% to 42.6\%), a half-point difference within the run-to-run noise band against a 13-point slot gain that is F's intended effect.
 
+% Percentages are of the 255 original models.
+
 \begin{table}[tb]
 \centering
-\caption{\tool{}'s coverage of Tuva's 255 models. Percentages are of the 255 original models.}
+\caption{\tool{}'s coverage of Tuva's 255 models. }
+\inv
 \label{tab:coverage}
 \small
 \begin{tabular}{lr}
@@ -255,6 +266,7 @@ New models created               & 11 \phantom{(0}(4.3\%) \\
 Total models modified            & 117 (45.9\%) \\
 \bottomrule
 \end{tabular}
+\inv
 \end{table}
 
 
@@ -287,7 +299,8 @@ This experiment isolates the contribution of the dataflow analysis that produces
 
 \begin{table}[tb]
 \centering
-\caption{Dataflow Analysis: targeting ablation on Tuva (\% slot reduction over the original project) under a fixed LLM-call budget across all arms. Whole-DAG refactoring produces no runnable project, so it has no cost to report (see text).}
+\caption{Dataflow Analysis: targeting ablation on Tuva (\% slot reduction over the original project) under a fixed LLM-call budget across all arms.}
+\inv
 \label{tab:ablation-dataflow}
 \small
 \begin{tabular}{lcc}
@@ -299,6 +312,7 @@ Random subgraphs           & $43.1$ & $58.0$ \\
 Dataflow-guided (\tool{})  & $\mathbf{51.1}$ & $\mathbf{67.7}$ \\
 \bottomrule
 \end{tabular}
+\inv
 \end{table}
 
 \head{Whole-DAG refactoring} The first alternative hands the entire project to the LLM under the same 3-attempt budget, testing whether bounding its attention to a region is needed at all. On Tuva the whole DAG fits in context (134k input tokens) and analysis succeeds, surfacing most of the opportunities our pipeline finds, but implementation never produces a runnable project. The response must restate every rewritten model in full, so it grows long enough to truncate mid-output and leave dangling references; cross-model references grow inconsistent as a fix to one model breaks an assumption in another; and because every broad attempt breaks somewhere, the correction loop retreats in scope across the three attempts (51, then 35, then 8 models). A broad rewrite captures most of the gain but touches too many interdependent models to verify, while one narrow enough to verify captures only a fraction. Dataflow analysis resolves this by making each subgraph small enough to verify while still reaching the high-value regions one at a time.
@@ -327,6 +341,7 @@ The question for the verification loop (\S\ref{sec:llm-refactoring}) is whether 
 \begin{table}[tb]
 \centering
 \caption{Equivalence-verification outcomes on Tuva's 12 refactoring subgraphs (three-attempt budget each).}
+\inv
 \label{tab:verification}
 \small
 \begin{tabular}{lr}
@@ -347,7 +362,8 @@ Running \tool{} is a one-time, design-time cost, paid once per project and amort
 
 \begin{table}[tb]
 \centering
-\caption{End-to-end LLM cost of optimizing Tuva with GPT-5.4, by pipeline stage.}
+\caption{End-to-end LLM cost of optimizing Tuva (GPT-5.4)}
+\inv
 \label{tab:llmcost}
 \small
 \begin{tabular}{lccccc}
@@ -358,6 +374,7 @@ Cost (\$)  & 2.00 & 0.96 & 5.68 & 2.88 & 11.51 \\
 Share (\%) & 17   & 8    & 49   & 25   & 100 \\
 \bottomrule
 \end{tabular}
+\inv
 \end{table}
 
 \subsubsection{Cost Model Accuracy}

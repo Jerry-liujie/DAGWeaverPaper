@@ -29,8 +29,10 @@ This trend is much broader than dbt. SQLMesh~\cite{sqlmeshOverview}, Dagster ass
 \draw[edge] (clean) -- (rev);
 \draw[edge] (clean) -- (cust);
 \end{tikzpicture}
+% \inv
 \caption{A toy SQL pipeline DAG. Nodes are SQL transformations or SQL-produced tables (called ``models'' in dbt); edges show which transformation consumes another transformation's output.}
 \label{fig:intro-toy}
+\inv
 \end{figure}
 
 \ph{Pipeline Optimization Gap} 
@@ -45,6 +47,13 @@ Lastly, \emph{Workflow schedulers}~\cite{airflowDags,dagsterAssets,prefectTasks,
 Our key insight is that explicit dependencies are not merely execution constraints; they are  signals that can be leveraged for optimization.
 In particular, a SQL pipeline DAG exposes six kinds of information that are hidden or much harder to recover when queries are optimized independently: \textbf{(1) Edge semantics:} producer-consumer edges reveal how one SQL transformation's output is used by later transformations; \textbf{(2) Cross-graph redundancy:} similar business logic can appear in distant parts of the graph, even when SQL text differs; \textbf{(3) Downstream demand:} downstream dependencies reveal which columns, joins, filters, and intermediate results can affect final outputs; \textbf{(4) Operator placement:} the graph reveals where expensive operations occur relative to data-reducing filters, projections, joins, and aggregations; 
 \textbf{(5) Rewrite-persistence coupling:} unlike single-query rewriting, which is constrained to equivalent rewrites that are cheaper in isolation, pipeline rewriting can consider alternatives that produce additional reusable outputs and are therefore locally more expensive, as long as those outputs are materialized once and reused by enough downstream consumers; and \textbf{(6) Refresh patterns:} schedules and source update rates reveal how often inputs change and outputs are consumed. 
+
+
+
+
+\begin{comment}
+    
+
 
 \begin{table*}[t]
 \centering
@@ -68,20 +77,22 @@ In particular, a SQL pipeline DAG exposes six kinds of information that are hidd
 \end{tabular}
 \endgroup
 \end{table*}
-  
+
+\end{comment}
+
 
 \ph{Our Approach}
 In this paper, we introduce \tool, the first (to the best of our knowledge) holistic, dependency-aware rewriting system for SQL pipeline DAGs.  \tool exploits the exposed dependency structure to  perform six classes of optimization: \textbf{(1) dependency-edge simplification:} remove or simplify dependency edges whose purpose can be expressed more directly, while preserving final outputs; \textbf{(2) non-local semantic reuse:} factor repeated work into a shared computation across non-adjacent transformations; \textbf{(3) downstream-aware pruning:} remove work that is provably irrelevant to every final output; \textbf{(4) pipeline-aware work placement:} move expensive work after data-reducing steps as long as final outputs are not impacted; \textbf{(5) rewrite-materialization co-optimization:} decide when rewrite benefits are outweighed by materialization cost, and when materializing a rewritten result makes the rewrite worthwhile; and \textbf{(6) frequency-aware optimization:} align computation frequency with input-change rates and output-consumption rates, avoiding refreshes that do not impact consumers.
 
-\tool first analyzes compiled SQL and dependency edges to identify regions likely to contain these opportunities. It then leverages Large Language Models (LLMs) to reason over the relevant subgraph and propose concrete refactorings, but separates proposal, criticism, SQL generation, and \tofix{data-backed equivalence checking} so unsafe or counterproductive rewrites can be rejected before adoption. Adopted candidates are not evaluated in isolation: \tool retunes persistence choices for each candidate using a learned cost model and an iterative local linearization procedure, then solves a global selection problem to choose a non-conflicting subset of rewrites. Finally, frequency information from source update rates and output demand reweights cost estimates, detects over-scheduled work, and generates splitting candidates when slow-changing logic is embedded in fast-refreshing transformations.
+\tool first analyzes compiled SQL and dependency edges to identify regions likely to contain these opportunities. It then leverages Large Language Models (LLMs) to reason over the relevant subgraph and propose concrete refactorings, but separates proposal, criticism, SQL generation, and data-backed equivalence checking so unsafe or counterproductive rewrites can be rejected before adoption. Adopted candidates are not evaluated in isolation: \tool retunes persistence choices for each candidate using a learned cost model and an iterative local linearization procedure, then solves a global selection problem to choose a non-conflicting subset of rewrites. Finally, frequency information from source update rates and output demand reweights cost estimates, detects over-scheduled work, and generates splitting candidates when slow-changing logic is embedded in fast-refreshing transformations.
 The result is a rewritten, output-equivalent SQL pipeline that remains executable by the same SQL engine and orchestration framework, but is significantly more performant.
 
 \ph{Contributions}
 This paper makes the following contributions:
 \begin{enumerate}[leftmargin=*, topsep=2pt, itemsep=1pt]
     \item We formulate dependency-aware source-to-source rewriting for SQL pipeline DAGs. We present the first holistic approach to this problem (to the best of our knowledge) by identifying the pipeline-level signals exposed by explicit dependencies and the rewriting opportunities they enable: dependency-edge simplification, non-local semantic reuse, downstream-aware pruning, pipeline-aware work placement, rewrite-materialization co-optimization, and frequency-aware optimization.
-    \item We present the design of \tool, which combines structural graph analysis, LLM-guided refactoring, separated proposal, criticism, SQL generation, and \tofix{data-backed equivalence checking}, learned cost modeling, persistence tuning, frequency-aware scheduling, and global candidate selection.
+    \item We present the design of \tool, which combines structural graph analysis, LLM-guided refactoring, separated proposal, criticism, SQL generation, and data-backed equivalence checking, learned cost modeling, persistence tuning, frequency-aware scheduling, and global candidate selection.
     \item We conduct a comprehensive evaluation showing that, on the open-source Tuva dbt project, \tool reduces elapsed time by \RememberToChange{42.6\%} and warehouse compute cost by \RememberToChange{67.7\%}; these reductions are \RememberToChange{22.8\%}/\RememberToChange{83.0\%} larger than materialization-only tuning and \RememberToChange{98.1\%}/\RememberToChange{348.3\%} larger than state-of-the-art single-query rewriting techniques.
    \end{enumerate}
 
-The rest of the paper is organized as follows. Section~\ref{sec:motivating} defines the setting and illustrates the opportunity space. Section~\ref{sec:approach} presents the design of \tool. Section~\ref{sec:eval} outlines the evaluation plan, Section~\ref{sec:related} discusses prior work, and Section~\ref{sec:conclusion} concludes.
+The rest of the paper is organized as follows. Section~\ref{sec:motivating} defines the setting and illustrates the opportunity space. Section~\ref{sec:approach} presents the design of \tool. Section~\ref{sec:eval} presents our evaluation, Section~\ref{sec:related} discusses prior work, and Section~\ref{sec:conclusion} concludes.

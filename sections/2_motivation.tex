@@ -328,14 +328,19 @@ Materialized view selection considers update cost but does not restructure the D
 \subsection{Motivating Examples}
 \label{sec:motivating-examples}
 
-In this section, we use a small claims-processing DAG to illustrate how explicit dependencies expose optimization opportunities that are invisible when each query is rewritten in isolation. For space, the examples combine multiple opportunities in one small claims-processing DAG; in practice, each opportunity can appear independently inside much larger DAGs with hundreds or thousands of models. Figure~\ref{fig:strategy-c-graph}(a) shows the original pipeline. 
-Here, we use a simplified healthcare claims-processing pipeline, inspired by the open-source Tuva project~\cite{tuvaProject}. Its main input is \code{claims}, a large table of claim-line records that is refreshed frequently. It feeds into 
+% In this section, we use a small claims-processing DAG to illustrate how explicit dependencies expose optimization opportunities that are invisible when each query is rewritten in isolation. For space, the examples combine multiple opportunities in one small claims-processing DAG; in practice, each opportunity can appear independently inside much larger DAGs with hundreds or thousands of models. Figure~\ref{fig:strategy-c-graph}(a) shows the original pipeline. 
+% Here, we use a simplified healthcare claims-processing pipeline, inspired by the open-source Tuva project~\cite{tuvaProject}.
+
+We illustrate optimization opportunities on a small healthcare claims-processing DAG inspired by the open-source Tuva project~\cite{tuvaProject}; for space it combines several that in practice appear independently inside much larger DAGs with hundreds or thousands of models. Figure~\ref{fig:strategy-c-graph}(a) shows the original pipeline.
+Its main input is \code{claims}, a large table of claim-line records that is refreshed frequently. It feeds into 
 service-category models such as \code{dialysis}, \code{psychiatric}, \code{equipment}, and \code{nursing}. These models classify claim lines using SQL predicates over claim attributes; Figure~\ref{fig:strategy-c-sql} gives simplified examples. The \code{nursing} model excludes claim lines already categorized as equipment, so it reads \code{equipment} as an exclusion list. The \code{claims\_summary} model joins claim lines with a 
 slow-changing lookup table, \code{code\_catalog}, that maps raw claim codes to descriptions, and then applies code-grouping logic over those descriptions. We next describe three examples that exploit these explicit dependencies; when all applied together, they produce the more efficient DAG in Figure~\ref{fig:strategy-c-graph}(b).
 
 \begin{figure*}[t]
+\inv
 \centering
-{\color{red}\input{figures/motivation_dag_graph}}
+{ \input{figures/motivation_dag_graph}}
+\inv
 \caption{Healthcare SQL pipeline DAG used for three motivating examples. The dotted line separates the original DAG (a) from the cumulative rewritten DAG (b). The rewritten DAG introduces reusable \code{service\_flags}, rewrites downstream models (\code{dialysis}, \code{psychiatric}, and \code{nursing}), removes the \code{equipment} dependency from \code{nursing}, and moves slow-changing reference-code grouping out of the fast claims path. }
 \label{fig:strategy-c-graph}
 \end{figure*}
@@ -426,6 +431,7 @@ FROM claims c JOIN service_code_flags f USING(code);
 \end{subfigure}
 \caption{SQL fragments for the healthcare examples in Figure~\ref{fig:strategy-c-graph}. Each panel corresponds to one motivating example: (a) Example 1 factors repeated service-category logic into shared flags, (b) Example 2 removes an exclusion-list dependency, and (c) Example 3 moves slow-side grouping out of the fast claims path. Each panel separates the original SQL from the rewritten SQL.}
 \label{fig:strategy-c-sql}
+\inv
 \end{figure*}
 
 
@@ -457,10 +463,11 @@ Multi-query optimization and common subexpression elimination~\cite{sellis1988mu
 Materialized view selection~\cite{agrawal2000automated} can choose which existing results to persist, but it does not rewrite the DAG to move slow-changing work out of a fast-refresh path, as illustrated in Figure~\ref{fig:strategy-c-sql-frequency}.
 
 
-The gap is not that these techniques are poorly designed; it is that none treats an explicit SQL dependency graph as the unit of rewriting.
-Dependency-aware rewriting must combine capabilities that are usually considered separately:
-use producer and consumer context, find semantic reuse beyond syntactic overlap, prune work that no downstream output consumes, move expensive work after data-reducing steps, evaluate rewrites together with persistence choices, and account for recurring refresh behavior.
-The remainder of this paper presents an approach that integrates these capabilities into a coherent rewriting framework.
+% The gap is not that these techniques are poorly designed; it is that none treats an explicit SQL dependency graph as the unit of rewriting.
+% Dependency-aware rewriting must combine capabilities that are usually considered separately:
+% use producer and consumer context, find semantic reuse beyond syntactic overlap, prune work that no downstream output consumes, move expensive work after data-reducing steps, evaluate rewrites together with persistence choices, and account for recurring refresh behavior.
+% The remainder of this paper presents an approach that integrates these capabilities into a coherent rewriting framework.
+The gap is not that these techniques are poorly designed; it is that none treats an explicit SQL dependency graph as the unit of rewriting, combining capabilities usually considered separately. The remainder of this paper presents an approach that integrates them into a coherent rewriting framework.
 
 
 
