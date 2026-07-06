@@ -62,7 +62,7 @@ dimension exploits. Table~\ref{tab:freq-profiles} summarizes the average cadence
 \begin{table}[tb]
 \centering
 \caption{Frequency profile averages per project. Each row is the fraction of root and leaf models at each cadence, averaged across three profiles.}
-% \inv
+\inv
 \label{tab:freq-profiles}
 \small
 \begin{tabular}{lrrrrrr}
@@ -75,7 +75,7 @@ Tuva   & 0.18 & 0.57 & 0.25 & 0.07 & 0.20 & 0.73 \\
 Stripe & 0.13 & 0.60 & 0.27 & 0.05 & 0.52 & 0.43 \\
 \bottomrule
 \end{tabular}
-% \inv
+\inv
 \end{table}
 
 \head{Cost metrics}
@@ -133,7 +133,7 @@ CSE            & $-3.2$  & $-5.6$  & $-3.1$  & $-0.6$ \\
 \end{tabular}
 \inv
 \end{table}
-
+% \inv
 
 Each baseline falls short for a different structural reason. We name the limit in each case, then summarize the classes of optimization that account for the gap above the strongest baseline.
 
@@ -268,7 +268,7 @@ Total models modified            & 117 (45.9\%) \\
 \end{tabular}
 \inv
 \end{table}
-
+\inv
 
 
 
@@ -353,7 +353,9 @@ Pass within 2 attempts       & 100\% (12/12) \\
 Never pass (budget exhausted) & 0\% \\
 \bottomrule
 \end{tabular}
+\inv
 \end{table}
+% \inv
 
 \subsubsection{LLM Cost}
 \label{sec:eval-llm-cost}
@@ -363,8 +365,8 @@ Running \tool{} is a one-time, design-time cost, paid once per project and amort
 \begin{table}[tb]
 \centering
 \caption{End-to-end LLM cost of optimizing Tuva (GPT-5.4)}
-\inv
 \label{tab:llmcost}
+% \inv
 \small
 \begin{tabular}{lccccc}
 \toprule
@@ -376,6 +378,7 @@ Share (\%) & 17   & 8    & 49   & 25   & 100 \\
 \end{tabular}
 \inv
 \end{table}
+\inv
 
 \subsubsection{Cost Model Accuracy}
 \label{sec:eval-cost-model}

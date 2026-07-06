@@ -183,7 +183,7 @@ To address such challenges, DAGSmith matches on the operation each model compute
 \draw[arr] (B.south) to[out=-90, in=30]  (C.north east);
 \node[lbl, text=blue!55!black, below=1.5mm of C] {same signature $\Rightarrow$ one reuse candidate};
 \end{tikzpicture}
-% \inv
+\inv
 \caption{
 Candidate identification discovers shared computation across models based on dataflow, not plan shape.
 Models A and B compute the same join on $k$, but Model A filters $R$ inline while Model B reads the already-filtered $R$ from a sibling model $R_p$; on the compiled SQL the two are different trees over different tables, while \tool{} resolves the reference and reduces both to one signature and a single reuse candidate.}

@@ -1,0 +1,147 @@
+% !TEX root = VLDB-2026-DAGSmith-Dependency-Aware-Rewriting-for-dbt-Style-SQL-Pipelines.tex
+% VLDB template version of 2020-08-03 enhances the ACM template, version 1.7.0:
+% https://www.acm.org/publications/proceedings-template
+% The ACM Latex guide provides further information about the ACM template
+
+\documentclass[sigconf]{acmart}
+%%
+%% \BibTeX command to typeset BibTeX logo in the docs
+\AtBeginDocument{%
+  \providecommand\BibTeX{{%
+    Bib\TeX}}}
+
+\setcopyright{acmlicensed}
+\copyrightyear{2027}
+\acmYear{2027}
+\acmDOI{XXXXXXX.XXXXXXX}
+\acmConference[SIGMOD '27]{ACM SIGMOD International Conference on
+  Management of Data}{June 13--19, 2027}{Huntington Beach, CA, USA}
+\acmISBN{978-1-4503-XXXX-X/2027/06}
+
+
+\input{imports}
+\input{macros}
+
+\raggedbottom
+
+\settopmatter{authorsperrow=3}
+
+\setcounter{topnumber}{3}
+\setcounter{bottomnumber}{2}
+\setcounter{totalnumber}{4}
+\renewcommand{\topfraction}{0.9}
+\renewcommand{\bottomfraction}{0.9}
+\renewcommand{\textfraction}{0.07}
+\renewcommand{\floatpagefraction}{0.85}
+
+\AtBeginDocument{%
+  \raggedbottom
+  \setlength{\textfloatsep}{8pt plus 2pt minus 2pt}%     top/bottom float <-> text
+  \setlength{\floatsep}{6pt plus 2pt minus 2pt}%         between two stacked floats
+  \setlength{\intextsep}{8pt plus 2pt minus 2pt}%        around in-text [h] floats
+  \setlength{\dbltextfloatsep}{10pt plus 2pt minus 2pt}% full-width float <-> text
+}
+
+
+
+\begin{document}
+
+% \raggedbottom
+
+
+\title{\tool: Dependency-Aware Rewriting for dbt-Style SQL Pipelines}
+
+%%
+%% The "author" command and its associated commands are used to define the authors and their affiliations.
+
+\author{Anonymous authors}
+
+\renewcommand{\shortauthors}{Anonymous Author(s)}
+
+
+% \author{Jie Liu}
+% \email{jiezzliu@umich.edu}
+% \affiliation{%
+%   \department{Computer Science and Engineering}
+%   \institution{University of Michigan, Ann Arbor}
+%   \country{USA}
+% }
+
+% \author{Lin Ma}
+% \email{linmacse@umich.edu}
+% \affiliation{%
+%   \department{Computer Science and Engineering}
+%   \institution{University of Michigan, Ann Arbor}
+%   \country{USA}
+% }
+
+% \author{Barzan Mozafari}
+% \email{mozafari@umich.edu}
+% \affiliation{%
+%   \department{Computer Science and Engineering}
+%   \institution{University of Michigan, Ann Arbor}
+%   \country{USA}
+% }
+
+% \renewcommand{\shortauthors}{Liu, Ma, and Mozafari}
+
+
+\include{sections/0_abstract}
+
+\begin{CCSXML}
+<ccs2012>
+ <concept>
+  <concept_id>10002951.10002952.10003190.10003205</concept_id>
+  <concept_desc>Information systems~Query optimization</concept_desc>
+  <concept_significance>500</concept_significance>
+ </concept>
+ <concept>
+  <concept_id>10002951.10002952.10003190.10003204</concept_id>
+  <concept_desc>Information systems~Database query processing</concept_desc>
+  <concept_significance>300</concept_significance>
+ </concept>
+ <concept>
+  <concept_id>10002951.10003227.10003236.10003237</concept_id>
+  <concept_desc>Information systems~Extraction, transformation and loading</concept_desc>
+  <concept_significance>100</concept_significance>
+ </concept>
+ <concept>
+  <concept_id>10010147.10010257</concept_id>
+  <concept_desc>Computing methodologies~Machine learning</concept_desc>
+  <concept_significance>100</concept_significance>
+ </concept>
+</ccs2012>
+\end{CCSXML}
+ 
+\ccsdesc[500]{Information systems~Query optimization}
+\ccsdesc[300]{Information systems~Database query processing}
+\ccsdesc[100]{Information systems~Extraction, transformation and loading}
+\ccsdesc[100]{Computing methodologies~Machine learning}
+ 
+% \keywords{SQL pipelines, query rewriting, dependency-aware optimization}
+
+
+
+\maketitle
+
+
+
+\input{sections/1_intro}
+
+\input{sections/2_motivation}
+\input{sections/3_approach}
+\input{sections/4_eval}
+\input{sections/5_related}
+\input{sections/6_conclusion}
+
+% \clearpage
+
+% \input{sections/x_ILP}
+
+\vspace{0.75\baselineskip}
+\noindent\textbf{Disclaimer.} This draft was polished with AI assistance for spelling, clarity, and condensation; the authors take full responsibility for the accuracy of the ideas, claims, and technical content.
+
+\bibliographystyle{ACM-Reference-Format}
+\bibliography{main}
+
+\end{document}

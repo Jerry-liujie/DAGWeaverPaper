@@ -453,6 +453,8 @@ The graph also exposes downstream demand: after this rewrite, if no remaining ed
 The \code{claims\_summary} model in Figure~\ref{fig:strategy-c-graph}(a) combines fast-changing claims with slow-changing reference codes and then applies code-grouping logic after the join. 
 As Figure~\ref{fig:strategy-c-sql-frequency} shows, \code{group\_code} depends only on the slow-changing \code{code\_catalog}, but the original \code{claims\_summary} evaluates it after joining into the high-volume \code{claims} stream. The recurring DAG exposes source update rates and consumer refresh schedules, so moving \code{group\_code} into \code{service\_code\_flags} lets the grouped lookup be recomputed only when the lookup table changes or consumers need it, while also applying the grouping before the join expands data volume. These are called frequency-aware optimization and pipeline-aware work placement in \S\ref{sec:dependencies-as-signals}.
 
+% \inv
+
 \subsection{Why Existing Techniques Fall Short}
 \label{sec:why-different}
 

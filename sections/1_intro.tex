@@ -29,11 +29,12 @@ This trend is much broader than dbt. SQLMesh~\cite{sqlmeshOverview}, Dagster ass
 \draw[edge] (clean) -- (rev);
 \draw[edge] (clean) -- (cust);
 \end{tikzpicture}
-% \inv
+\inv
 \caption{A toy SQL pipeline DAG. Nodes are SQL transformations or SQL-produced tables (called ``models'' in dbt); edges show which transformation consumes another transformation's output.}
 \label{fig:intro-toy}
 \inv
 \end{figure}
+\inv
 
 \ph{Pipeline Optimization Gap} 
 These pipeline DAGs often include hundreds or thousands of SQL transformations that reference one another. Their scale makes them difficult to optimize with techniques designed for a single SQL statement or a flat workload: inlining every referenced transformation into each downstream query would produce deeply nested SQL with tens or hundreds of layers whose size and complexity are well beyond what today's optimizers can even tackle. In particular, existing \emph{query rewriting} techniques, whether traditional rule-based systems~\cite{wetune} or modern synthesis- or LLM-based techniques~\cite{slabcity,genrewrite,rbot}, rewrite one SQL statement at a time.  This scope is useful for improving a standalone query, but it is too narrow for optimizations whose correctness or benefit depends on the surrounding pipeline, such as removing work no final output uses, reusing equivalent logic across separate transformations, or changing refresh frequency based on input changes and output consumption.
